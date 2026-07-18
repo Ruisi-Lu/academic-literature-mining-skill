@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::util::{
-    normalize_arxiv, normalize_doi, normalize_openalex, normalize_space, title_fingerprint, unique,
+    arxiv_base_id, normalize_arxiv, normalize_doi, normalize_openalex, normalize_space,
+    title_fingerprint, unique,
 };
 
 pub const SCHEMA_VERSION: &str = "1.0";
@@ -278,11 +279,7 @@ impl WorkRecord {
         if let Some(doi) = self.ids.get("doi").and_then(|value| normalize_doi(value)) {
             return format!("doi:{doi}");
         }
-        if let Some(arxiv) = self
-            .ids
-            .get("arxiv")
-            .and_then(|value| normalize_arxiv(value))
-        {
+        if let Some(arxiv) = self.ids.get("arxiv").and_then(|value| arxiv_base_id(value)) {
             return format!("arxiv:{}", arxiv.to_lowercase());
         }
         if let Some(openalex) = self.ids.get("openalex") {
@@ -577,6 +574,14 @@ mod tests {
             .ids
             .insert("doi".into(), "https://doi.org/10.1000/ABC".into());
         assert_eq!(record.identity(), "doi:10.1000/abc");
+    }
+
+    #[test]
+    fn uses_unversioned_arxiv_id_as_identity() {
+        let mut record = WorkRecord::new("arxiv", "2401.00001v2");
+        record.ids.insert("arxiv".into(), "2401.00001v2".into());
+        assert_eq!(record.identity(), "arxiv:2401.00001");
+        assert_eq!(record.ids["arxiv"], "2401.00001v2");
     }
 
     #[test]

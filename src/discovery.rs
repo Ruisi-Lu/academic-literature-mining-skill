@@ -16,8 +16,8 @@ use crate::domain::{
     Author, DateParts, FullTextCandidate, Metrics, RawSourceRecord, ResearchPlan, WorkRecord,
 };
 use crate::util::{
-    normalize_arxiv, normalize_doi, normalize_openalex, normalize_space, now, strip_markup,
-    title_fingerprint,
+    arxiv_base_id, arxiv_ids_match, normalize_arxiv, normalize_doi, normalize_openalex,
+    normalize_space, now, strip_markup, title_fingerprint,
 };
 
 #[derive(Clone, Debug)]
@@ -177,18 +177,22 @@ pub async fn lookup_arxiv(settings: &Settings, arxiv_id: &str) -> Result<Option<
         .error_for_status()?;
     let text = response.text().await?;
     let feed: ArxivFeed = from_str(&text).context("parse arXiv Atom feed")?;
-    let Some(entry) = feed.entries.into_iter().find(|entry| {
-        normalize_arxiv(&entry.id).is_some_and(|candidate| candidate.eq_ignore_ascii_case(&id))
-    }) else {
+    let Some(entry) = feed
+        .entries
+        .into_iter()
+        .find(|entry| arxiv_ids_match(&id, &entry.id))
+    else {
         return Ok(None);
     };
+    let resolved_id =
+        normalize_arxiv(&entry.id).context("resolved arXiv entry missing identifier")?;
     let raw = serde_json::to_value(&entry)?;
     let record = arxiv_record(&entry)?;
     Ok(Some(DiscoveredWork {
         record,
         raw_records: vec![RawSourceRecord {
             source: "arxiv".to_owned(),
-            source_id: id,
+            source_id: resolved_id,
             retrieved_at: now(),
             raw,
         }],
@@ -739,6 +743,9 @@ fn aliases_for(record: &WorkRecord) -> Vec<String> {
         .and_then(|value| normalize_arxiv(value))
     {
         aliases.push(format!("arxiv:{}", arxiv.to_lowercase()));
+        if let Some(base) = arxiv_base_id(&arxiv) {
+            aliases.push(format!("arxiv:{}", base.to_lowercase()));
+        }
         has_persistent_id = true;
     }
     if let Some(openalex) = record
@@ -1187,6 +1194,33 @@ mod tests {
         assert_eq!(record.ids["doi"], "10.1000/example");
         assert_eq!(record.authors[0].family, "Chen");
         assert_eq!(record.subjects, vec!["cs.IR"]);
+    }
+
+    #[test]
+    fn finds_versioned_arxiv_entry_for_unversioned_request() {
+        let xml = r#"
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>https://arxiv.org/abs/2401.00001v2</id>
+                <title>Visual scholarly retrieval</title>
+                <summary>A complete abstract.</summary>
+                <published>2024-01-02T00:00:00Z</published>
+              </entry>
+            </feed>
+        "#;
+        let feed: ArxivFeed = from_str(xml).unwrap();
+        let entry = feed
+            .entries
+            .iter()
+            .find(|entry| arxiv_ids_match("2401.00001", &entry.id))
+            .unwrap();
+        assert_eq!(normalize_arxiv(&entry.id), Some("2401.00001v2".to_owned()));
+        assert!(
+            !feed
+                .entries
+                .iter()
+                .any(|entry| arxiv_ids_match("2401.00001v1", &entry.id))
+        );
     }
 
     #[test]

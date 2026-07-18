@@ -62,6 +62,39 @@ pub fn normalize_arxiv(value: &str) -> Option<String> {
     pattern.is_match(&id).then_some(id)
 }
 
+pub fn arxiv_base_id(value: &str) -> Option<String> {
+    let id = normalize_arxiv(value)?;
+    let base = match id.rsplit_once(['v', 'V']) {
+        Some((base, version))
+            if !base.is_empty()
+                && !version.is_empty()
+                && version.chars().all(|character| character.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => &id,
+    };
+    Some(base.to_owned())
+}
+
+pub fn arxiv_ids_match(requested: &str, candidate: &str) -> bool {
+    let Some(requested) = normalize_arxiv(requested) else {
+        return false;
+    };
+    let Some(candidate) = normalize_arxiv(candidate) else {
+        return false;
+    };
+    let Some(requested_base) = arxiv_base_id(&requested) else {
+        return false;
+    };
+    if requested.len() != requested_base.len() {
+        requested.eq_ignore_ascii_case(&candidate)
+    } else {
+        arxiv_base_id(&candidate)
+            .is_some_and(|candidate_base| candidate_base.eq_ignore_ascii_case(&requested_base))
+    }
+}
+
 pub fn normalize_openalex(value: &str) -> Option<String> {
     let id = value
         .trim()
@@ -186,6 +219,26 @@ mod tests {
             Some("W12345".to_owned())
         );
         assert_eq!(normalize_openalex("not-a-work"), None);
+    }
+
+    #[test]
+    fn matches_unversioned_arxiv_ids_to_current_versions() {
+        assert_eq!(
+            arxiv_base_id("https://arxiv.org/abs/2401.00001v2"),
+            Some("2401.00001".to_owned())
+        );
+        assert_eq!(
+            arxiv_base_id("hep-th/9901001v3"),
+            Some("hep-th/9901001".to_owned())
+        );
+        assert!(arxiv_ids_match(
+            "2401.00001",
+            "https://arxiv.org/abs/2401.00001v2"
+        ));
+        assert!(arxiv_ids_match("hep-th/9901001", "hep-th/9901001v3"));
+        assert!(arxiv_ids_match("2401.00001v2", "2401.00001v2"));
+        assert!(!arxiv_ids_match("2401.00001v1", "2401.00001v2"));
+        assert!(!arxiv_ids_match("2401.00001", "2401.00002v1"));
     }
 
     #[test]
