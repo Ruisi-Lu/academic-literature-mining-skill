@@ -58,12 +58,15 @@ enum Command {
         #[arg(long, default_value = "corpus")]
         workspace: PathBuf,
     },
-    /// Render complete PDF pages to images without OCR or text extraction.
+    /// Prepare native PDF text plus complete page images without OCR.
     Render {
         #[arg(long, default_value = "corpus")]
         workspace: PathBuf,
+        /// Rebuild pages that were already rendered or indexed.
+        #[arg(long)]
+        refresh_existing: bool,
     },
-    /// Embed rendered pages with Nemotron Embed VL and write them to Qdrant.
+    /// Embed text-image PDF pages with Nemotron Embed VL and write them to Qdrant.
     Ingest {
         #[arg(long, default_value = "corpus")]
         workspace: PathBuf,
@@ -77,7 +80,7 @@ enum Command {
         #[arg(long, default_value_t = 1000)]
         max_candidates: usize,
     },
-    /// Retrieve PDF pages from Qdrant and visually rerank them.
+    /// Retrieve PDF pages from Qdrant and rerank their text-image evidence.
     Query {
         query: String,
         #[arg(long, default_value_t = 10)]
@@ -163,9 +166,12 @@ pub async fn run() -> Result<()> {
             let count = pipeline::download_selected(&state, &settings).await?;
             json!({"downloaded": count, "status": state.summary()?})
         }
-        Command::Render { workspace } => {
+        Command::Render {
+            workspace,
+            refresh_existing,
+        } => {
             let mut state = State::open(&workspace)?;
-            let count = pipeline::render_downloaded(&mut state, &settings)?;
+            let count = pipeline::render_downloaded(&mut state, &settings, refresh_existing)?;
             json!({"rendered_papers": count, "status": state.summary()?})
         }
         Command::Ingest { workspace } => {

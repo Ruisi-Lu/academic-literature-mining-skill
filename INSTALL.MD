@@ -147,7 +147,9 @@ cargo test --locked
 ```
 
 `PDFIUM_AUTO_CACHE_DIR` defaults to a skill-local `.cache/pdfium` in `.env.example`. PDFium
-renders PDF pages to images; the pipeline performs no OCR and extracts no PDF text.
+extracts each page's embedded native text and renders its complete page image. The pipeline
+combines both for model input, performs no OCR, and falls back to image-only for pages without a
+usable text layer.
 
 ## 8. Run a corpus
 
@@ -159,3 +161,7 @@ cargo run --release --locked -- \
 
 For controlled or resumable execution, run `discover`, `screen`, `download`, `render`, `ingest`,
 and `export` separately. Inspect `target/release/litmine --help` for exact options.
+
+When upgrading a corpus produced by the older image-only pipeline, run
+`render --refresh-existing` followed by `ingest` once. The SQLite migration is automatic, while
+the explicit refresh avoids unexpectedly rerendering every indexed PDF during normal runs.

@@ -13,19 +13,24 @@ Use:
 - model: `nvidia/llama-nemotron-rerank-vl-1b-v2`
 - authentication: `Authorization: Bearer $NVIDIA_API_KEY`
 
-Embed document pages with `input_type: "passage"`, `modality: "image"`, float output, and a
-base64 image data URL. Embed retrieval questions with `input_type: "query"` and
-`modality: "text"`.
+Embed digital document pages with `input_type: "passage"`, `modality: "text_image"`, float
+output, embedded native page text, and a base64 image data URL for the complete rendered page.
+The API accepts a modality array whose entries align with the input array. Use `modality: "image"`
+for individual pages whose native text is empty. Embed retrieval questions with
+`input_type: "query"` and `modality: "text"`.
 
-Rerank a text query against passages containing `image` data URLs. Preserve the returned `index`
-when mapping logits back to candidates. Preserve both the raw logit and sigmoid-normalized score;
-do not interpret the sigmoid value as a calibrated relevance probability without project-specific
+Rerank a text query against passages containing both `text` and `image` data URLs. For image-only
+pages, omit `text` rather than sending an empty string. Preserve the returned `index` when mapping
+logits back to candidates. Preserve both the raw logit and sigmoid-normalized score; do not
+interpret the sigmoid value as a calibrated relevance probability without project-specific
 validation.
 
 The current embeddings request contract accepts text and image inputs, not an
 `application/pdf` data URL. Treat the PDF as the source document and render each complete page to
-an image with PDFium. Do not run OCR or extract PDF text. The VL model consumes the page pixels,
-including text, tables, charts, formulas, and layout.
+an image with PDFium. Extract only the embedded native text layer for the same page and combine it
+with the page image as `text_image`; do not OCR or create semantic text chunks. The image preserves
+layout, tables, charts, formulas, figures, and text-order information that native extraction can
+lose. Fall back to image-only for scans or extraction failures.
 
 Keep each decoded page image below 25 MiB. The default vector size is 2048. Re-ingest into a new
 collection if the embedding model or vector dimension changes.

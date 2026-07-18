@@ -17,7 +17,7 @@ use crate::discovery::{
 };
 use crate::domain::{AgentCandidate, RawSourceRecord, ResearchPlan};
 use crate::download::{client as download_client, download_work};
-use crate::nvidia::NvidiaClient;
+use crate::nvidia::{NvidiaClient, PageModelInput};
 use crate::qdrant::{QdrantClient, SearchResult};
 use crate::quality::{add_relevance, assess};
 use crate::render::render_pdf;
@@ -215,8 +215,17 @@ pub async fn download_selected(state: &State, settings: &Settings) -> Result<usi
     Ok(downloaded)
 }
 
-pub fn render_downloaded(state: &mut State, settings: &Settings) -> Result<usize> {
-    let works = state.works_with_statuses(&["downloaded", "error:render"])?;
+pub fn render_downloaded(
+    state: &mut State,
+    settings: &Settings,
+    refresh_existing: bool,
+) -> Result<usize> {
+    let statuses = if refresh_existing {
+        &["downloaded", "error:render", "rendered", "indexed"][..]
+    } else {
+        &["downloaded", "error:render"][..]
+    };
+    let works = state.works_with_statuses(statuses)?;
     let mut rendered = 0;
     for (work_id, _) in works {
         let Some(pdf_path) = state.pdf_for_work(&work_id)? else {
@@ -242,11 +251,14 @@ pub async fn ingest_pages(state: &mut State, settings: &Settings) -> Result<usiz
     let pages = state.pages_for_indexing()?;
     let mut indexed = 0;
     for chunk in pages.chunks(settings.embed_batch_size) {
-        let paths = chunk
+        let model_inputs = chunk
             .iter()
-            .map(|(page, _, _)| PathBuf::from(&page.image_path))
+            .map(|(page, _, _)| PageModelInput {
+                image_path: PathBuf::from(&page.image_path),
+                text: page.page_text.clone(),
+            })
             .collect::<Vec<_>>();
-        let vectors = nvidia.embed_images(&paths).await?;
+        let vectors = nvidia.embed_pages(&model_inputs).await?;
         if vectors
             .iter()
             .any(|vector| vector.len() != settings.vector_size)
@@ -639,8 +651,8 @@ pub async fn run_all(
     info!(selected, "screening complete");
     let downloaded = download_selected(state, settings).await?;
     info!(downloaded, "downloads complete");
-    let rendered = render_downloaded(state, settings)?;
-    info!(rendered, "visual page rendering complete");
+    let rendered = render_downloaded(state, settings, false)?;
+    info!(rendered, "multimodal PDF page preparation complete");
     let indexed_pages = ingest_pages(state, settings).await?;
     info!(indexed_pages, "Qdrant ingestion complete");
     let audit = export(state)?;

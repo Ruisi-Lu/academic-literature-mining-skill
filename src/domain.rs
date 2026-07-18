@@ -380,6 +380,8 @@ pub struct PageRecord {
     pub page_number: u32,
     pub image_path: String,
     pub image_sha256: String,
+    #[serde(default)]
+    pub page_text: String,
     pub width: u32,
     pub height: u32,
     pub indexed_at: Option<String>,

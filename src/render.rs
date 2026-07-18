@@ -6,6 +6,7 @@ use image::codecs::jpeg::JpegEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use pdfium_auto::bind_pdfium;
 use pdfium_render::prelude::*;
+use tracing::warn;
 use uuid::Uuid;
 
 use crate::config::Settings;
@@ -45,12 +46,23 @@ pub fn render_pdf(
         .set_maximum_height(max_height);
     let mut pages = Vec::with_capacity(document.pages().len() as usize);
     for (index, page) in document.pages().iter().enumerate() {
+        let page_number = index as u32 + 1;
+        let page_text = match page.text() {
+            Ok(text) => normalize_page_text(&text.all()),
+            Err(error) => {
+                warn!(
+                    page_number,
+                    %error,
+                    "PDF native text extraction failed; using image-only input for this page"
+                );
+                String::new()
+            }
+        };
         let image = page
             .render_with_config(&config)
             .with_context(|| format!("render page {}", index + 1))?
             .as_image();
         let rgb = image.into_rgb8();
-        let page_number = index as u32 + 1;
         let image_path: PathBuf = output_dir.join(format!("{page_number:05}.jpg"));
         let file = fs::File::create(&image_path)?;
         let encoder = JpegEncoder::new_with_quality(file, settings.jpeg_quality);
@@ -71,12 +83,29 @@ pub fn render_pdf(
             page_number,
             image_path: image_path.to_string_lossy().into_owned(),
             image_sha256: sha256_file(&image_path)?,
+            page_text,
             width: rgb.width(),
             height: rgb.height(),
             indexed_at: None,
         });
     }
     Ok(pages)
+}
+
+fn normalize_page_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -86,7 +115,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a prepared PDFium native library"]
-    fn renders_a_complete_pdf_page_without_text_extraction() {
+    fn prepares_a_complete_pdf_page_with_native_text_and_image() {
         let temporary = tempdir().unwrap();
         let workspace = temporary.path().join("corpus");
         fs::create_dir_all(workspace.join("pdfs")).unwrap();
@@ -100,6 +129,15 @@ mod tests {
         assert_eq!(pages[0].page_number, 1);
         assert!(Path::new(&pages[0].image_path).is_file());
         assert!(!pages[0].image_sha256.is_empty());
+        assert_eq!(pages[0].page_text, "Academic PDF smoke test");
+    }
+
+    #[test]
+    fn normalizes_pdf_control_characters_and_whitespace() {
+        assert_eq!(
+            normalize_page_text("  Native\u{0000} PDF\r\n text\tlayer  "),
+            "Native PDF text layer"
+        );
     }
 
     fn minimal_pdf() -> Vec<u8> {

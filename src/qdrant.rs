@@ -10,7 +10,7 @@ use tracing::warn;
 use crate::citations::csl_json;
 use crate::config::Settings;
 use crate::domain::{PageRecord, PdfArtifact, WorkRecord};
-use crate::nvidia::NvidiaClient;
+use crate::nvidia::{NvidiaClient, PageModelInput};
 
 #[derive(Clone)]
 pub struct QdrantClient {
@@ -103,6 +103,11 @@ impl QdrantClient {
             .zip(vectors)
             .map(|((page, record, artifact), vector)| {
                 let citation_key = record.identity().replace([':', '/'], "-");
+                let embedding_modality = if page.page_text.trim().is_empty() {
+                    "image"
+                } else {
+                    "text_image"
+                };
                 json!({
                     "id": page.page_id,
                     "vector": {"content": vector},
@@ -113,7 +118,9 @@ impl QdrantClient {
                         "page_number": page.page_number,
                         "image_path": page.image_path,
                         "image_sha256": page.image_sha256,
+                        "page_text": page.page_text,
                         "embedding_model": self.settings.embed_model,
+                        "embedding_modality": embedding_modality,
                         "citation": csl_json(record, &citation_key),
                         "publication_year": record.year(),
                         "canonical_record": record,
@@ -169,13 +176,16 @@ impl QdrantClient {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let paths = points
+        let model_inputs = points
             .iter()
-            .map(|point| PathBuf::from(text(point, "/payload/image_path")))
+            .map(|point| PageModelInput {
+                image_path: PathBuf::from(text(point, "/payload/image_path")),
+                text: text(point, "/payload/page_text"),
+            })
             .collect::<Vec<_>>();
-        let mut scores = Vec::with_capacity(paths.len());
-        for chunk in paths.chunks(self.settings.rerank_batch_size) {
-            scores.extend(nvidia.rerank_images(query, chunk).await?);
+        let mut scores = Vec::with_capacity(model_inputs.len());
+        for chunk in model_inputs.chunks(self.settings.rerank_batch_size) {
+            scores.extend(nvidia.rerank_pages(query, chunk).await?);
         }
         let mut results = points
             .into_iter()

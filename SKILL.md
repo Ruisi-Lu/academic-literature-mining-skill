@@ -1,18 +1,19 @@
 ---
 name: academic-literature-mining
-description: Mine, screen, download, preserve, visually index, and retrieve academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, and Qdrant. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, preserve authorized PDFs and authoritative citation metadata, import subagent search results, retrieve evidence from PDF pages without OCR or text extraction, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
+description: Mine, screen, download, preserve, multimodally index, and retrieve academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, and Qdrant. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, preserve authorized PDFs and authoritative citation metadata, import subagent search results, retrieve evidence from native-text-plus-image PDF pages without OCR, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
 ---
 
 # Academic Literature Mining
 
 Build a reproducible scholarly corpus from persistent identifiers and authoritative
 metadata. Preserve the original PDF, complete citation record, provenance, quality
-decision, and page-level visual vectors so later writing can cite the source safely.
+decision, and page-level multimodal vectors so later writing can cite the source
+safely.
 
 ## Enforce the invariants
 
-- Use the Rust `litmine` CLI for the complete runtime. Do not add PDF-to-text
-  dependencies.
+- Use the Rust `litmine` CLI for the complete runtime. Keep PDF preparation in
+  Rust and PDFium; do not add OCR or an external PDF-to-text service.
 - Keep discovery workers untrusted and cheap. Let them search only, and require the
   coordinator to resolve identifiers, verify metadata, score quality, authorize
   downloads, and write to Qdrant.
@@ -30,8 +31,12 @@ decision, and page-level visual vectors so later writing can cite the source saf
   it as the sole support for a key conclusion.
 - Download only an openly licensed or otherwise authorized full-text URL. Never
   infer download permission from the ability to access a URL.
-- Preserve the original PDF and render complete pages to images. Do not OCR,
-  extract, chunk, or embed PDF text.
+- Preserve the original PDF. For each page, extract only its embedded native text
+  layer with PDFium and render the complete page to an image. Embed and rerank both
+  as one `text_image` page; when no usable native text exists, fall back to the
+  complete page image. Do not OCR or split a page into semantic text chunks.
+- Do not send an `application/pdf` payload to the NVIDIA Embed or Rerank endpoint;
+  those model APIs accept text and image data URLs, not raw PDF files.
 - Use exactly:
   `nvidia/llama-nemotron-embed-vl-1b-v2` for embeddings and
   `nvidia/llama-nemotron-rerank-vl-1b-v2` for reranking.
@@ -126,12 +131,20 @@ cargo run --release --locked -- audit
 cargo run --release --locked -- export
 ```
 
+After upgrading an existing image-only corpus, rebuild its stored pages once and
+re-ingest them:
+
+```bash
+cargo run --release --locked -- render --refresh-existing
+cargo run --release --locked -- ingest
+```
+
 Inspect `status` and the audit output after every large run. Do not treat a network
 retry, a missing abstract, or an inaccessible PDF as a successful source.
 
 ## Retrieve literature
 
-Search the visual page corpus:
+Search the multimodal page corpus:
 
 ```bash
 cargo run --release --locked -- \
@@ -139,8 +152,9 @@ cargo run --release --locked -- \
 ```
 
 The CLI embeds the text query, retrieves candidate PDF pages from Qdrant, then
-visually reranks those page images. Use the returned work ID, page number, DOI, and
-canonical citation to inspect and cite the original source.
+reranks each page using the same native-text-plus-image representation used for
+indexing. Image-only pages remain supported. Use the returned work ID, page
+number, DOI, and canonical citation to inspect and cite the original source.
 
 ## Export citations and audit provenance
 

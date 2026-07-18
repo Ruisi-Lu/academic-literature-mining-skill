@@ -27,11 +27,12 @@ content-addressed copy under `metadata/plans/` whenever discovery or screening r
 
 ## Qdrant page payload
 
-Attach these values to every visual page point:
+Attach these values to every multimodal page point:
 
 - deterministic page UUID;
 - canonical work ID and one-based page number;
 - rendered image path and SHA-256;
+- embedded native page text and the actual embedding modality (`text_image` or `image`);
 - preserved PDF path, source URL, SHA-256, and license assertion;
 - embedding model ID and schema version;
 - complete CSL-JSON citation;
@@ -57,6 +58,6 @@ venues, volume, issue, or page numbers.
 
 ## Page-level citations
 
-When a retrieved claim comes from a visual page point, cite the canonical work and include the
-one-based PDF page number from the payload. Treat the rendered image only as retrieval evidence;
-the preserved PDF and its SHA-256 remain the source artifact.
+When a retrieved claim comes from a multimodal page point, cite the canonical work and include the
+one-based PDF page number from the payload. Treat both extracted text and the rendered image only
+as retrieval evidence; the preserved PDF and its SHA-256 remain the source artifact.

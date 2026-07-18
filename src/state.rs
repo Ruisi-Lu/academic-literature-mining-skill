@@ -80,6 +80,7 @@ impl State {
                 page_number INTEGER NOT NULL,
                 image_path TEXT NOT NULL,
                 image_sha256 TEXT NOT NULL,
+                page_text TEXT NOT NULL DEFAULT '',
                 width INTEGER NOT NULL,
                 height INTEGER NOT NULL,
                 indexed_at TEXT,
@@ -97,6 +98,7 @@ impl State {
             );
             "#,
         )?;
+        ensure_page_text_column(&connection)?;
         Ok(Self {
             connection,
             workspace,
@@ -262,8 +264,8 @@ impl State {
                 r#"
                 INSERT INTO pages (
                     page_id, work_id, page_number, image_path, image_sha256,
-                    width, height, indexed_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    page_text, width, height, indexed_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
             )?;
             for page in pages {
@@ -273,6 +275,7 @@ impl State {
                     page.page_number,
                     page.image_path,
                     page.image_sha256,
+                    page.page_text,
                     page.width,
                     page.height,
                     page.indexed_at
@@ -291,7 +294,7 @@ impl State {
         let mut statement = self.connection.prepare(
             r#"
             SELECT p.page_id, p.work_id, p.page_number, p.image_path, p.image_sha256,
-                   p.width, p.height, p.indexed_at, w.canonical_json,
+                   p.page_text, p.width, p.height, p.indexed_at, w.canonical_json,
                    COALESCE(w.pdf_url, ''), COALESCE(w.pdf_path, ''),
                    COALESCE(w.pdf_sha256, ''), COALESCE(w.pdf_license, '')
             FROM pages p JOIN works w ON p.work_id=w.work_id
@@ -307,16 +310,17 @@ impl State {
                     page_number: row.get(2)?,
                     image_path: row.get(3)?,
                     image_sha256: row.get(4)?,
-                    width: row.get(5)?,
-                    height: row.get(6)?,
-                    indexed_at: row.get(7)?,
+                    page_text: row.get(5)?,
+                    width: row.get(6)?,
+                    height: row.get(7)?,
+                    indexed_at: row.get(8)?,
                 },
-                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
                 PdfArtifact {
-                    url: row.get(9)?,
-                    path: row.get(10)?,
-                    sha256: row.get(11)?,
-                    license: row.get(12)?,
+                    url: row.get(10)?,
+                    path: row.get(11)?,
+                    sha256: row.get(12)?,
+                    license: row.get(13)?,
                 },
             ))
         })?;
@@ -404,6 +408,20 @@ impl State {
     }
 }
 
+fn ensure_page_text_column(connection: &Connection) -> Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(pages)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|column| column == "page_text") {
+        connection.execute(
+            "ALTER TABLE pages ADD COLUMN page_text TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +457,7 @@ mod tests {
                     page_number: 1,
                     image_path: image_path.to_string_lossy().into_owned(),
                     image_sha256: "image-sha256".into(),
+                    page_text: "Native PDF text".into(),
                     width: 100,
                     height: 200,
                     indexed_at: None,
@@ -447,8 +466,45 @@ mod tests {
             .unwrap();
         let pages = state.pages_for_indexing().unwrap();
         assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].0.page_text, "Native PDF text");
         assert_eq!(pages[0].2.sha256, "pdf-sha256");
         assert_eq!(pages[0].2.path, pdf_path.to_string_lossy());
         assert!(state.workspace.is_absolute());
+    }
+
+    #[test]
+    fn migrates_existing_page_tables_for_native_text() {
+        let temporary = tempdir().unwrap();
+        let workspace = temporary.path().join("corpus");
+        fs::create_dir_all(&workspace).unwrap();
+        let connection = Connection::open(workspace.join("state.sqlite3")).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE pages (
+                    page_id TEXT PRIMARY KEY,
+                    work_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    image_path TEXT NOT NULL,
+                    image_sha256 TEXT NOT NULL,
+                    width INTEGER NOT NULL,
+                    height INTEGER NOT NULL,
+                    indexed_at TEXT
+                );
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        let state = State::open(&workspace).unwrap();
+        let columns = state
+            .connection
+            .prepare("PRAGMA table_info(pages)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "page_text"));
     }
 }

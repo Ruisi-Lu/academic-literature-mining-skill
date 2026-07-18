@@ -19,6 +19,12 @@ pub struct RerankScore {
     pub normalized: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct PageModelInput {
+    pub image_path: PathBuf,
+    pub text: String,
+}
+
 #[derive(Clone)]
 pub struct NvidiaClient {
     client: Client,
@@ -55,19 +61,23 @@ impl NvidiaClient {
             .context("NVIDIA embedding response was empty")
     }
 
-    pub async fn embed_images(&self, paths: &[PathBuf]) -> Result<Vec<Vec<f32>>> {
-        if paths.is_empty() {
+    pub async fn embed_pages(&self, pages: &[PageModelInput]) -> Result<Vec<Vec<f32>>> {
+        if pages.is_empty() {
             return Ok(Vec::new());
         }
-        let mut input = Vec::with_capacity(paths.len());
-        for path in paths {
-            input.push(image_data_url(path).await?);
+        let mut input = Vec::with_capacity(pages.len());
+        let mut modality = Vec::with_capacity(pages.len());
+        for page in pages {
+            let image = image_data_url(&page.image_path).await?;
+            let (document, document_modality) = page_embedding_input(&page.text, image);
+            input.push(document);
+            modality.push(document_modality);
         }
         let payload = json!({
             "model": self.settings.embed_model,
             "input": input,
             "input_type": "passage",
-            "modality": "image",
+            "modality": modality,
             "embedding_type": "float",
             "encoding_format": "float",
             "truncate": "END"
@@ -75,11 +85,11 @@ impl NvidiaClient {
         let response: EmbeddingResponse = self.post(&self.settings.embed_url, &payload).await?;
         let mut data = response.data;
         data.sort_by_key(|item| item.index);
-        if data.len() != paths.len() {
+        if data.len() != pages.len() {
             bail!(
-                "NVIDIA returned {} embeddings for {} images",
+                "NVIDIA returned {} embeddings for {} PDF pages",
                 data.len(),
-                paths.len()
+                pages.len()
             );
         }
         Ok(data.into_iter().map(|item| item.embedding).collect())
@@ -93,10 +103,11 @@ impl NvidiaClient {
         self.rerank(query, values).await
     }
 
-    pub async fn rerank_images(&self, query: &str, paths: &[PathBuf]) -> Result<Vec<f64>> {
-        let mut passages = Vec::with_capacity(paths.len());
-        for path in paths {
-            passages.push(json!({"image": image_data_url(path).await?}));
+    pub async fn rerank_pages(&self, query: &str, pages: &[PageModelInput]) -> Result<Vec<f64>> {
+        let mut passages = Vec::with_capacity(pages.len());
+        for page in pages {
+            let image = image_data_url(&page.image_path).await?;
+            passages.push(page_rerank_passage(&page.text, image));
         }
         Ok(self
             .rerank(query, passages)
@@ -170,6 +181,24 @@ impl NvidiaClient {
             delay = (delay * 2).min(30);
         }
         bail!("NVIDIA Build request exhausted retries")
+    }
+}
+
+fn page_embedding_input(text: &str, image: String) -> (String, &'static str) {
+    let text = text.trim();
+    if text.is_empty() {
+        (image, "image")
+    } else {
+        (format!("{text}\n{image}"), "text_image")
+    }
+}
+
+fn page_rerank_passage(text: &str, image: String) -> Value {
+    let text = text.trim();
+    if text.is_empty() {
+        json!({"image": image})
+    } else {
+        json!({"text": text, "image": image})
     }
 }
 
@@ -276,5 +305,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("omitted one or more passages"));
+    }
+
+    #[test]
+    fn builds_hybrid_embedding_and_reranking_inputs() {
+        let image = "data:image/jpeg;base64,aW1hZ2U=".to_owned();
+        let (input, modality) = page_embedding_input(" Native PDF text ", image.clone());
+        assert_eq!(input, format!("Native PDF text\n{image}"));
+        assert_eq!(modality, "text_image");
+
+        let passage = page_rerank_passage(" Native PDF text ", image.clone());
+        assert_eq!(passage, json!({"text": "Native PDF text", "image": image}));
+    }
+
+    #[test]
+    fn falls_back_to_image_only_for_pages_without_native_text() {
+        let image = "data:image/jpeg;base64,aW1hZ2U=".to_owned();
+        let (input, modality) = page_embedding_input(" \n\t ", image.clone());
+        assert_eq!(input, image);
+        assert_eq!(modality, "image");
+
+        let passage = page_rerank_passage("", input.clone());
+        assert_eq!(passage, json!({"image": input}));
+        assert!(passage.get("text").is_none());
     }
 }

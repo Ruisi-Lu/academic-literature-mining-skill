@@ -2,8 +2,8 @@
 
 A citation-complete, agent-assisted scholarly literature mining system built in
 Rust. It discovers academically valuable papers, verifies persistent identifiers,
-downloads authorized PDFs, indexes complete PDF pages visually with NVIDIA
-Nemotron, and stores retrievable evidence in Qdrant.
+downloads authorized PDFs, indexes complete PDF pages as native text plus page
+images with NVIDIA Nemotron, and stores retrievable evidence in Qdrant.
 
 ## Why this project exists
 
@@ -14,13 +14,14 @@ relevance, retraction, citation-completeness, and full-text authorization checks
 
 Key properties:
 
-- Pure Rust runtime with no PDF-to-text pipeline.
+- Pure Rust runtime with PDFium-native text and page-image preparation.
 - Budget-model subagents perform bounded, read-only candidate discovery.
 - Crossref, OpenAlex, arXiv, and optional Semantic Scholar enrichment.
 - NVIDIA Build hosted inference with:
   - `nvidia/llama-nemotron-embed-vl-1b-v2`
   - `nvidia/llama-nemotron-rerank-vl-1b-v2`
-- Complete PDF pages are rendered to images without OCR or text extraction.
+- Digital PDF pages use their embedded native text plus a complete rendered page
+  image; pages without usable text automatically use image-only input.
 - Original PDFs, checksums, license assertions, raw metadata, and provenance are
   preserved.
 - Qdrant runs through Docker Compose and is bound to localhost by default.
@@ -35,8 +36,8 @@ flowchart LR
     C[Crossref / OpenAlex / arXiv] -->|Authoritative metadata| B
     B --> D{Academic value<br/>and relevance gates}
     D -->|Accepted + authorized| E[Original PDF archive]
-    E --> F[PDFium full-page rendering]
-    F --> G[Nemotron Embed VL]
+    E --> F[PDFium native text + full-page image]
+    F --> G[Nemotron Embed VL text_image]
     G --> H[(Qdrant)]
     H --> I[Nemotron Rerank VL]
     B --> J[(SQLite provenance)]
@@ -165,7 +166,15 @@ target/release/litmine audit    --workspace corpus
 target/release/litmine status   --workspace corpus
 ```
 
-Search the visual page corpus:
+To upgrade pages created by an older image-only version, explicitly rebuild and
+re-ingest them once:
+
+```bash
+target/release/litmine render --refresh-existing --workspace corpus
+target/release/litmine ingest --workspace corpus
+```
+
+Search the multimodal page corpus:
 
 ```bash
 target/release/litmine query \
@@ -173,10 +182,10 @@ target/release/litmine query \
   --top-k 20 --candidate-limit 80
 ```
 
-Retrieval embeds the text question, retrieves candidate page images from Qdrant,
-and visually reranks those complete pages. Returned results include the work ID,
-one-based PDF page number, canonical citation, original PDF path and URL, SHA-256,
-and license metadata.
+Retrieval embeds the text question, retrieves candidate pages from Qdrant, and
+reranks the same native-text-plus-image page representations. Returned results
+include the work ID, one-based PDF page number, canonical citation, original PDF
+path and URL, SHA-256, and license metadata.
 
 ## Academic-value policy
 
@@ -205,15 +214,21 @@ appropriate field-specific instrument. See
 
 ## PDF handling
 
-The original PDF is always retained. PDFium renders each complete page to JPEG,
-and the VL models consume the page pixels, including visible text, tables, charts,
-formulas, and layout.
+The original PDF is always retained as the source artifact. PDFium prepares two
+aligned representations for each one-based page: its embedded native text layer
+and a JPEG rendering of the complete page. Digital pages are embedded with
+`modality: "text_image"` and reranked with both `text` and `image`, preserving the
+visual layout, tables, charts, formulas, and figures that plain extraction loses.
 
-There is no OCR, PDF text extraction, or text chunking. NVIDIA's current embedding
-request contract accepts text and image data URLs rather than an
-`application/pdf` data URL, so full-page rendering is the visual adapter
-used by this project. Each decoded page image is checked against NVIDIA's 25 MiB
-limit.
+Pages without a usable native text layer, including scanned pages, automatically
+fall back to image-only embedding and reranking. The pipeline performs no OCR and
+does not split pages into semantic text chunks. Extracted text is retrieval
+metadata, not a citation source; always verify quotations in the preserved PDF.
+
+The NVIDIA Embed and Rerank model APIs do not accept an `application/pdf` payload.
+They accept text and base64 image data URLs, so the complete page rendering remains
+the required visual input. Each decoded page image is checked against NVIDIA's
+25 MiB limit.
 
 ## Preserved citation and provenance data
 
@@ -228,7 +243,8 @@ The canonical work record preserves:
 - full-text candidates, version, license, and authorization evidence;
 - metadata source names, source IDs, retrieval timestamps, and raw provider
   responses;
-- original PDF URL, local path, SHA-256, and page-level image checksums.
+- original PDF URL, local path, SHA-256, page-level native text, and rendered-image
+  checksums.
 
 Every Qdrant page payload duplicates the canonical CSL citation and complete work
 record so a retrieved page remains independently attributable.
@@ -268,9 +284,9 @@ cargo test --all-targets --locked
 cargo build --release --locked
 ```
 
-The PDF rendering test is ignored during ordinary offline test runs because it
-requires a prepared native PDFium library. `doctor --prepare-pdfium` prepares it;
-the test can then be run explicitly with `PDFIUM_LIB_PATH`.
+The PDF text-image preparation test is ignored during ordinary offline test runs
+because it requires a prepared native PDFium library. `doctor --prepare-pdfium`
+prepares it; the test can then be run explicitly with `PDFIUM_LIB_PATH`.
 
 ## Project status
 
