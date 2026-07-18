@@ -18,7 +18,7 @@
   "date_to": null,
   "languages": ["en"],
   "sources": ["openalex", "crossref", "arxiv"],
-  "include_preprints": true,
+  "include_preprints": false,
   "target_papers": 200,
   "min_quality_score": 60,
   "min_relevance_score": 0.0
