@@ -46,6 +46,11 @@ enum Command {
         #[arg(long, default_value_t = 1000)]
         max_candidates: usize,
     },
+    /// Re-resolve DOI-backed arXiv preprints and queue formal versions for screening.
+    RefreshMetadata {
+        #[arg(long, default_value = "corpus")]
+        workspace: PathBuf,
+    },
     /// Apply hard academic-value gates and Nemotron relevance reranking.
     Screen {
         #[arg(long, default_value = "corpus")]
@@ -154,6 +159,11 @@ pub async fn run() -> Result<()> {
             let count =
                 pipeline::discover_into_state(&state, &settings, &plan, max_candidates).await?;
             json!({"discovered": count, "status": state.summary()?})
+        }
+        Command::RefreshMetadata { workspace } => {
+            let state = State::open(&workspace)?;
+            let count = pipeline::refresh_formal_metadata(&state, &settings).await?;
+            json!({"promoted_formal_versions": count, "status": state.summary()?})
         }
         Command::Screen { workspace, plan } => {
             let state = State::open(&workspace)?;

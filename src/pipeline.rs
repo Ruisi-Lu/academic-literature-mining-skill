@@ -65,9 +65,90 @@ pub async fn discover_into_state(
     Ok(stored)
 }
 
+trait FormalVersionResolver {
+    async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>>;
+}
+
+struct LiveFormalVersionResolver<'a> {
+    settings: &'a Settings,
+}
+
+impl FormalVersionResolver for LiveFormalVersionResolver<'_> {
+    async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+        lookup_crossref(self.settings, doi).await
+    }
+}
+
+pub async fn refresh_formal_metadata(state: &State, settings: &Settings) -> Result<usize> {
+    refresh_formal_metadata_with(state, &LiveFormalVersionResolver { settings }).await
+}
+
+async fn refresh_formal_metadata_with(
+    state: &State,
+    resolver: &impl FormalVersionResolver,
+) -> Result<usize> {
+    let works = state.works_with_statuses(&["discovered", "rejected"])?;
+    let mut promoted = 0;
+    for (work_id, record) in works {
+        if !record.work_type.eq_ignore_ascii_case("preprint")
+            || record
+                .ids
+                .get("arxiv")
+                .and_then(|value| normalize_arxiv(value))
+                .is_none()
+        {
+            continue;
+        }
+        let Some(doi) = record.ids.get("doi").and_then(|value| normalize_doi(value)) else {
+            continue;
+        };
+        match resolver.lookup_crossref(&doi).await {
+            Ok(Some(enrichment)) => {
+                let formal = enrichment.record.is_verified_formal_publication();
+                let merged = if formal {
+                    Some(record.merge(enrichment.record))
+                } else {
+                    None
+                };
+                let destination_id = if let Some(merged) = merged {
+                    promoted += 1;
+                    state.upsert_work(&merged, "discovered")?
+                } else {
+                    work_id
+                };
+                for raw in &enrichment.raw_records {
+                    state.store_raw(&destination_id, raw)?;
+                }
+            }
+            Ok(None) => {
+                warn!(
+                    doi,
+                    "Crossref had no formal metadata for DOI-backed arXiv record"
+                );
+                state.store_raw(&work_id, &resolution_failure("crossref", &doi, "not_found"))?;
+            }
+            Err(error) => {
+                warn!(doi, %error, "Crossref formal metadata refresh failed");
+                state.store_raw(
+                    &work_id,
+                    &resolution_failure("crossref", &doi, "lookup_failed"),
+                )?;
+            }
+        }
+    }
+    Ok(promoted)
+}
+
 pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> Result<usize> {
     state.preserve_research_plan(plan)?;
     let nvidia = NvidiaClient::new(settings)?;
+    let promoted = refresh_formal_metadata(state, settings).await?;
+    if promoted > 0 {
+        info!(
+            promoted,
+            "promoted DOI-backed arXiv records before screening"
+        );
+    }
     let works = state.works_with_statuses(&["discovered", "rejected"])?;
     let mut assessments = Vec::with_capacity(works.len());
     let mut relevance_scores = Vec::new();
@@ -672,6 +753,7 @@ mod tests {
     use super::*;
     use crate::domain::{FullTextCandidate, WorkRecord};
     use std::sync::Mutex;
+    use tempfile::tempdir;
 
     fn discovered(record: WorkRecord, source: &str, source_id: &str) -> DiscoveredWork {
         DiscoveredWork {
@@ -717,6 +799,83 @@ mod tests {
                 .push(format!("openalex-doi:{doi}"));
             anyhow::bail!("simulated optional enrichment failure")
         }
+    }
+
+    struct FakeFormalVersionResolver {
+        crossref: DiscoveredWork,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl FormalVersionResolver for FakeFormalVersionResolver {
+        async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls.lock().unwrap().push(doi.to_owned());
+            Ok(Some(self.crossref.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn refreshes_rejected_doi_backed_arxiv_records_for_rescreening() {
+        let temporary = tempdir().unwrap();
+        let state = State::open(&temporary.path().join("corpus")).unwrap();
+
+        let mut preprint = WorkRecord::new("arxiv", "1904.08064v3");
+        preprint.ids.insert("arxiv".into(), "1904.08064v3".into());
+        preprint
+            .ids
+            .insert("doi".into(), "10.1016/j.eswa.2020.113680".into());
+        preprint.title = "Forecasting with time series imaging".into();
+        preprint.abstract_text = "Richer repository abstract for screening.".into();
+        preprint.work_type = "preprint".into();
+        preprint.container_title = "arXiv".into();
+        preprint.quality.rejection_reasons = vec!["preprints excluded by research plan".into()];
+        preprint.fulltext_candidates.push(FullTextCandidate {
+            url: "https://arxiv.org/pdf/1904.08064v3".into(),
+            source: "arxiv".into(),
+            authorized: true,
+            ..FullTextCandidate::default()
+        });
+        state.upsert_work(&preprint, "rejected").unwrap();
+
+        let mut formal = WorkRecord::new("crossref", "10.1016/j.eswa.2020.113680");
+        formal
+            .ids
+            .insert("doi".into(), "10.1016/j.eswa.2020.113680".into());
+        formal.title = "Forecasting with time series imaging".into();
+        formal.work_type = "article-journal".into();
+        formal.container_title = "Expert Systems with Applications".into();
+        formal.issued.date_parts = vec![vec![2020, 12, 15]];
+        formal.url = "https://doi.org/10.1016/j.eswa.2020.113680".into();
+        let resolver = FakeFormalVersionResolver {
+            crossref: discovered(formal, "crossref", "10.1016/j.eswa.2020.113680"),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let promoted = refresh_formal_metadata_with(&state, &resolver)
+            .await
+            .unwrap();
+
+        assert_eq!(promoted, 1);
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            ["10.1016/j.eswa.2020.113680"]
+        );
+        let works = state.all_works().unwrap();
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0].0, "doi:10.1016/j.eswa.2020.113680");
+        assert_eq!(works[0].2, "discovered");
+        assert_eq!(works[0].1.work_type, "article-journal");
+        assert_eq!(
+            works[0].1.container_title,
+            "Expert Systems with Applications"
+        );
+        assert_eq!(works[0].1.ids["arxiv"], "1904.08064v3");
+        assert!(
+            works[0]
+                .1
+                .fulltext_candidates
+                .iter()
+                .any(|candidate| candidate.source == "arxiv" && candidate.authorized)
+        );
     }
 
     #[tokio::test]

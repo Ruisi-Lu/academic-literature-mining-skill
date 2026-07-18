@@ -162,6 +162,13 @@ cargo run --release --locked -- \
 For controlled or resumable execution, run `discover`, `screen`, `download`, `render`, `ingest`,
 and `export` separately. Inspect `target/release/litmine --help` for exact options.
 
+When upgrading a workspace created with version `0.1.0`, run
+`refresh-metadata --workspace corpus` followed by
+`screen --plan <preserved-plan> --workspace corpus`. This re-resolves
+DOI-backed arXiv preprints through Crossref and queues verified formal versions
+for screening without discarding the authorized arXiv PDF or provenance.
+`screen` also performs the metadata refresh automatically.
+
 When upgrading a corpus produced by the older image-only pipeline, run
 `render --refresh-existing` followed by `ingest` once. The SQLite migration is automatic, while
 the explicit refresh avoids unexpectedly rerendering every indexed PDF during normal runs.

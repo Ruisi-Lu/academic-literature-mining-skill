@@ -129,6 +129,7 @@ For controlled runs, execute the stages independently:
 
 ```bash
 cargo run --release --locked -- discover --plan research-plan.json
+cargo run --release --locked -- refresh-metadata
 cargo run --release --locked -- screen --plan research-plan.json
 cargo run --release --locked -- download
 cargo run --release --locked -- render
@@ -136,6 +137,14 @@ cargo run --release --locked -- ingest
 cargo run --release --locked -- audit
 cargo run --release --locked -- export
 ```
+
+After upgrading an existing workspace that may contain DOI-backed arXiv
+preprints, run `refresh-metadata` and then rerun `screen` with the preserved
+research plan. Let `refresh-metadata` re-resolve affected DOI records through
+Crossref, promote verified journal or archival-conference citation fields, and
+queue promoted records for screening. `screen` performs this refresh
+automatically as well. Keep the arXiv identifier and authorized PDF as
+alternate-version provenance.
 
 After upgrading an existing image-only corpus, rebuild its stored pages once and
 re-ingest them:

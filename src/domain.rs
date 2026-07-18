@@ -320,48 +320,100 @@ impl WorkRecord {
         )
     }
 
-    pub fn merge(mut self, other: Self) -> Self {
-        prefer_longer(&mut self.title, other.title);
-        prefer_longer(&mut self.abstract_text, other.abstract_text);
-        prefer_if_empty(&mut self.container_title, other.container_title);
-        prefer_if_empty(&mut self.publisher, other.publisher);
-        prefer_if_empty(&mut self.volume, other.volume);
-        prefer_if_empty(&mut self.issue, other.issue);
-        prefer_if_empty(&mut self.page, other.page);
-        prefer_if_empty(&mut self.article_number, other.article_number);
-        prefer_if_empty(&mut self.language, other.language);
-        prefer_if_empty(&mut self.url, other.url);
-        if self.issued.date_parts.is_empty() && !other.issued.date_parts.is_empty() {
-            self.issued = other.issued;
+    pub(crate) fn is_verified_formal_publication(&self) -> bool {
+        self.canonical_citation_precedence() > 0
+    }
+
+    fn canonical_citation_precedence(&self) -> u8 {
+        if !matches!(
+            self.work_type.as_str(),
+            "article-journal" | "paper-conference"
+        ) {
+            return 0;
         }
-        merge_authors(&mut self.authors, other.authors);
-        self.ids.extend(other.ids);
-        self.metrics.cited_by_count = self
+        self.provenance
+            .iter()
+            .map(|source| match source.source.to_ascii_lowercase().as_str() {
+                "publisher" => 3,
+                "crossref" => 3,
+                "openalex" => 2,
+                _ => 0,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        let self_precedence = self.canonical_citation_precedence();
+        let other_precedence = other.canonical_citation_precedence();
+        let (mut canonical, alternate) = if other_precedence > self_precedence {
+            (other, self)
+        } else {
+            (self, other)
+        };
+        let alternate_is_preprint = alternate.work_type.eq_ignore_ascii_case("preprint");
+        let protect_formal_citation =
+            canonical.is_verified_formal_publication() && alternate_is_preprint;
+
+        if protect_formal_citation {
+            prefer_if_empty(&mut canonical.title, alternate.title);
+        } else {
+            prefer_longer(&mut canonical.title, alternate.title);
+            prefer_if_empty(&mut canonical.container_title, alternate.container_title);
+            prefer_if_empty(&mut canonical.publisher, alternate.publisher);
+            prefer_if_empty(&mut canonical.volume, alternate.volume);
+            prefer_if_empty(&mut canonical.issue, alternate.issue);
+            prefer_if_empty(&mut canonical.page, alternate.page);
+            prefer_if_empty(&mut canonical.article_number, alternate.article_number);
+            prefer_if_empty(&mut canonical.url, alternate.url);
+            if canonical.issued.date_parts.is_empty() && !alternate.issued.date_parts.is_empty() {
+                canonical.issued = alternate.issued;
+            }
+        }
+        prefer_longer(&mut canonical.abstract_text, alternate.abstract_text);
+        prefer_if_empty(&mut canonical.language, alternate.language);
+        merge_authors(&mut canonical.authors, alternate.authors);
+        for (name, value) in alternate.ids {
+            canonical.ids.entry(name).or_insert(value);
+        }
+        if protect_formal_citation && canonical.url.is_empty() {
+            canonical.url = canonical
+                .ids
+                .get("doi")
+                .and_then(|value| normalize_doi(value))
+                .map(|doi| format!("https://doi.org/{doi}"))
+                .unwrap_or_default();
+        }
+        canonical.metrics.cited_by_count = canonical
             .metrics
             .cited_by_count
-            .max(other.metrics.cited_by_count);
-        self.metrics.influential_citation_count = self
+            .max(alternate.metrics.cited_by_count);
+        canonical.metrics.influential_citation_count = canonical
             .metrics
             .influential_citation_count
-            .max(other.metrics.influential_citation_count);
-        self.metrics.fwci = max_option(self.metrics.fwci, other.metrics.fwci);
-        self.metrics.citation_percentile = max_option(
-            self.metrics.citation_percentile,
-            other.metrics.citation_percentile,
+            .max(alternate.metrics.influential_citation_count);
+        canonical.metrics.fwci = max_option(canonical.metrics.fwci, alternate.metrics.fwci);
+        canonical.metrics.citation_percentile = max_option(
+            canonical.metrics.citation_percentile,
+            alternate.metrics.citation_percentile,
         );
-        for (name, value) in other.flags {
-            self.flags
+        for (name, value) in alternate.flags {
+            canonical
+                .flags
                 .entry(name)
                 .and_modify(|existing| *existing |= value)
                 .or_insert(value);
         }
-        self.keywords = unique(self.keywords.into_iter().chain(other.keywords));
-        self.subjects = unique(self.subjects.into_iter().chain(other.subjects));
-        self.issn = unique(self.issn.into_iter().chain(other.issn));
-        self.isbn = unique(self.isbn.into_iter().chain(other.isbn));
-        merge_fulltext(&mut self.fulltext_candidates, other.fulltext_candidates);
-        merge_provenance(&mut self.provenance, other.provenance);
-        self
+        canonical.keywords = unique(canonical.keywords.into_iter().chain(alternate.keywords));
+        canonical.subjects = unique(canonical.subjects.into_iter().chain(alternate.subjects));
+        canonical.issn = unique(canonical.issn.into_iter().chain(alternate.issn));
+        canonical.isbn = unique(canonical.isbn.into_iter().chain(alternate.isbn));
+        merge_fulltext(
+            &mut canonical.fulltext_candidates,
+            alternate.fulltext_candidates,
+        );
+        merge_provenance(&mut canonical.provenance, alternate.provenance);
+        canonical
     }
 }
 
@@ -504,9 +556,10 @@ fn max_option(left: Option<f64>, right: Option<f64>) -> Option<f64> {
 fn merge_fulltext(target: &mut Vec<FullTextCandidate>, candidates: Vec<FullTextCandidate>) {
     for candidate in candidates {
         if let Some(existing) = target.iter_mut().find(|item| item.url == candidate.url) {
-            if existing.license.is_empty() {
-                existing.license = candidate.license;
-            }
+            prefer_if_empty(&mut existing.source, candidate.source);
+            prefer_if_empty(&mut existing.version, candidate.version);
+            prefer_if_empty(&mut existing.license, candidate.license);
+            prefer_if_empty(&mut existing.content_type, candidate.content_type);
             existing.authorized |= candidate.authorized;
         } else {
             target.push(candidate);
@@ -619,6 +672,110 @@ mod tests {
         assert_eq!(merged.authors.len(), 1);
         assert!(merged.authors[0].orcid.is_some());
         assert_eq!(merged.authors[0].affiliations.len(), 2);
+    }
+
+    fn arxiv_preprint() -> WorkRecord {
+        let mut record = WorkRecord::new("arxiv", "1904.08064v3");
+        record.ids.insert("arxiv".into(), "1904.08064v3".into());
+        record
+            .ids
+            .insert("doi".into(), "10.1016/j.eswa.2020.113680".into());
+        record.title = "Forecasting with time series imaging (extended preprint)".into();
+        record.abstract_text =
+            "The repository preserves a substantially richer abstract for screening.".into();
+        record.work_type = "preprint".into();
+        record.container_title = "arXiv".into();
+        record.issued.date_parts = vec![vec![2019, 4, 17]];
+        record.url = "https://arxiv.org/abs/1904.08064v3".into();
+        record.fulltext_candidates.push(FullTextCandidate {
+            url: "https://arxiv.org/pdf/1904.08064v3".into(),
+            source: "arxiv".into(),
+            version: "submittedVersion".into(),
+            content_type: "application/pdf".into(),
+            authorized: true,
+            ..FullTextCandidate::default()
+        });
+        record.flags.insert("is_retracted".into(), false);
+        record
+    }
+
+    fn crossref_formal() -> WorkRecord {
+        let mut record = WorkRecord::new("crossref", "10.1016/j.eswa.2020.113680");
+        record
+            .ids
+            .insert("doi".into(), "10.1016/j.eswa.2020.113680".into());
+        record.title = "Forecasting with time series imaging".into();
+        record.abstract_text = "Short formal abstract.".into();
+        record.work_type = "article-journal".into();
+        record.container_title = "Expert Systems with Applications".into();
+        record.publisher = "Elsevier BV".into();
+        record.issued.date_parts = vec![vec![2020, 12, 15]];
+        record.volume = "171".into();
+        record.issue = "1".into();
+        record.page = "113680".into();
+        record.article_number = "113680".into();
+        record.url = "https://doi.org/10.1016/j.eswa.2020.113680".into();
+        record.flags.insert("is_retracted".into(), false);
+        record
+    }
+
+    fn assert_formalized_arxiv_record(merged: &WorkRecord) {
+        assert_eq!(merged.identity(), "doi:10.1016/j.eswa.2020.113680");
+        assert_eq!(merged.work_type, "article-journal");
+        assert_eq!(merged.title, "Forecasting with time series imaging");
+        assert_eq!(merged.container_title, "Expert Systems with Applications");
+        assert_eq!(merged.publisher, "Elsevier BV");
+        assert_eq!(merged.year(), Some(2020));
+        assert_eq!(merged.volume, "171");
+        assert_eq!(merged.issue, "1");
+        assert_eq!(merged.page, "113680");
+        assert_eq!(merged.article_number, "113680");
+        assert_eq!(merged.url, "https://doi.org/10.1016/j.eswa.2020.113680");
+        assert_eq!(
+            merged.abstract_text,
+            "The repository preserves a substantially richer abstract for screening."
+        );
+        assert_eq!(merged.ids["arxiv"], "1904.08064v3");
+        assert!(
+            merged
+                .fulltext_candidates
+                .iter()
+                .any(|candidate| candidate.source == "arxiv"
+                    && candidate.authorized
+                    && candidate.url == "https://arxiv.org/pdf/1904.08064v3")
+        );
+        assert!(
+            merged
+                .provenance
+                .iter()
+                .any(|source| source.source == "crossref")
+        );
+        assert!(
+            merged
+                .provenance
+                .iter()
+                .any(|source| source.source == "arxiv")
+        );
+    }
+
+    #[test]
+    fn arxiv_then_crossref_promotes_formal_citation() {
+        let merged = arxiv_preprint().merge(crossref_formal());
+        assert_formalized_arxiv_record(&merged);
+    }
+
+    #[test]
+    fn crossref_then_arxiv_keeps_formal_citation() {
+        let merged = crossref_formal().merge(arxiv_preprint());
+        assert_formalized_arxiv_record(&merged);
+    }
+
+    #[test]
+    fn retraction_flags_remain_monotonic_in_both_merge_orders() {
+        let mut formal = crossref_formal();
+        formal.flags.insert("is_retracted".into(), true);
+        assert!(arxiv_preprint().merge(formal.clone()).flags["is_retracted"]);
+        assert!(formal.merge(arxiv_preprint()).flags["is_retracted"]);
     }
 
     #[test]

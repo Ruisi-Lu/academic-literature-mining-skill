@@ -20,7 +20,12 @@ Preserve these fields without fabrication:
 - every metadata source and retrieval timestamp.
 
 Store the exact raw response from each scholarly source in SQLite `source_records`. Merge fields
-only by filling gaps or preferring the more complete value. Never erase provenance.
+by filling gaps or preferring the more complete value, except when authoritative metadata
+promotes a preprint to a verified journal article or archival conference paper. In that case,
+prefer the formal title, type, venue, publisher, publication date, volume, issue, pages, article
+number, and DOI landing URL; retain the richer abstract plus every arXiv identifier, authorized
+full-text candidate, and provenance source. Keep retraction and withdrawal flags monotonic. Never
+erase provenance.
 
 Preserve the normalized active research plan at `metadata/research-plan.json` and an immutable,
 content-addressed copy under `metadata/plans/` whenever discovery or screening runs.

@@ -157,6 +157,7 @@ independently:
 
 ```bash
 target/release/litmine discover --plan research-plan.json --workspace corpus
+target/release/litmine refresh-metadata --workspace corpus
 target/release/litmine screen   --plan research-plan.json --workspace corpus
 target/release/litmine download --workspace corpus
 target/release/litmine render   --workspace corpus
@@ -164,6 +165,21 @@ target/release/litmine ingest   --workspace corpus
 target/release/litmine export   --workspace corpus
 target/release/litmine audit    --workspace corpus
 target/release/litmine status   --workspace corpus
+```
+
+`refresh-metadata` re-resolves DOI-backed arXiv preprints through Crossref. When
+Crossref verifies a journal article or archival conference paper, its type,
+venue, publisher, publication date, volume, issue, pages, and DOI landing URL
+become canonical; the arXiv ID, richer abstract, authorized PDF, and source
+provenance remain attached. Promoted `rejected` records return to `discovered` so
+they can be screened again. The `screen` command automatically runs the same
+refresh before applying its hard preprint gate.
+
+To migrate an existing workspace, run:
+
+```bash
+target/release/litmine refresh-metadata --workspace corpus
+target/release/litmine screen --plan research-plan.json --workspace corpus
 ```
 
 To upgrade pages created by an older image-only version, explicitly rebuild and
