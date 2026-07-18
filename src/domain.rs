@@ -344,6 +344,7 @@ impl WorkRecord {
     }
 
     pub fn merge(self, other: Self) -> Self {
+        let receiver_quality = self.quality.clone();
         let self_precedence = self.canonical_citation_precedence();
         let other_precedence = other.canonical_citation_precedence();
         let (mut canonical, alternate) = if other_precedence > self_precedence {
@@ -413,6 +414,7 @@ impl WorkRecord {
             alternate.fulltext_candidates,
         );
         merge_provenance(&mut canonical.provenance, alternate.provenance);
+        canonical.quality = receiver_quality;
         canonical
     }
 }
@@ -776,6 +778,21 @@ mod tests {
         formal.flags.insert("is_retracted".into(), true);
         assert!(arxiv_preprint().merge(formal.clone()).flags["is_retracted"]);
         assert!(formal.merge(arxiv_preprint()).flags["is_retracted"]);
+    }
+
+    #[test]
+    fn formal_promotion_preserves_the_receiver_screening_assessment() {
+        let mut preprint = arxiv_preprint();
+        preprint.quality.score = 42.0;
+        preprint.quality.relevance_score = 0.75;
+        preprint.quality.screened_at = "2026-07-19T00:00:00Z".into();
+
+        let merged = preprint.merge(crossref_formal());
+
+        assert_eq!(merged.work_type, "article-journal");
+        assert_eq!(merged.quality.score, 42.0);
+        assert_eq!(merged.quality.relevance_score, 0.75);
+        assert_eq!(merged.quality.screened_at, "2026-07-19T00:00:00Z");
     }
 
     #[test]
