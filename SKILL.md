@@ -14,6 +14,12 @@ safely.
 
 - Use the Rust `litmine` CLI for the complete runtime. Keep PDF preparation in
   Rust and PDFium; do not add OCR or an external PDF-to-text service.
+- Enforce a strict read-only boundary for
+  `~/Project/visual-encoding-vs-raw-iot-reasoning`: never create, edit, delete,
+  rename, or move any file there. Read only
+  `research/academic-literature-mining-skill-issues.md` and the exact files that
+  report explicitly names; do not list, search, or inspect any other path in that
+  project. Apply fixes only in the repository containing this `SKILL.md`.
 - Keep discovery workers untrusted and cheap. Let them search only, and require the
   coordinator to resolve identifiers, verify metadata, score quality, authorize
   downloads, and write to Qdrant.
