@@ -18,6 +18,16 @@ decision, and page-level visual vectors so later writing can cite the source saf
   downloads, and write to Qdrant.
 - Accept a candidate only when it has a DOI, arXiv ID, or OpenAlex ID that can be
   resolved through a scholarly metadata source.
+- Prefer the formally published, peer-reviewed version over a preprint. Before
+  accepting or citing any preprint, search by exact title and authors for a journal
+  article and, in fields with archival conferences, a proceedings version; verify
+  the match through an authoritative publisher, journal, or proceedings record and
+  verify its DOI when one is assigned.
+- When a formal version exists, cite and canonicalize that version. Retain the
+  preprint only as alternate-identifier, full-text, and version provenance. Use a
+  standalone preprint only when it is indispensable and no formal version can be
+  verified; label it explicitly, record the sources and date checked, and never use
+  it as the sole support for a key conclusion.
 - Download only an openly licensed or otherwise authorized full-text URL. Never
   infer download permission from the ability to access a URL.
 - Preserve the original PDF and render complete pages to images. Do not OCR,
@@ -59,6 +69,8 @@ Specify:
 - the exact question and search concepts;
 - inclusion and exclusion criteria;
 - publication window and accepted work types;
+- publication-status policy, with preprints excluded by default unless the plan
+  explicitly permits indispensable, clearly labeled exceptions;
 - minimum quality score and corpus size;
 - source-specific queries rather than one broad query;
 - stopping rules so repeated runs are bounded and reproducible.
