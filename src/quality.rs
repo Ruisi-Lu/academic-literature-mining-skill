@@ -200,6 +200,7 @@ pub fn assess(record: &WorkRecord, plan: &ResearchPlan) -> QualityAssessment {
         score,
         tier,
         relevance_score: 0.0,
+        relevance_logit: None,
         priority_score: 0.0,
         accepted: rejection_reasons.is_empty(),
         signals,
@@ -210,10 +211,12 @@ pub fn assess(record: &WorkRecord, plan: &ResearchPlan) -> QualityAssessment {
 
 pub fn add_relevance(
     mut assessment: QualityAssessment,
-    relevance: f64,
+    relevance_logit: f64,
+    relevance_score: f64,
     plan: &ResearchPlan,
 ) -> QualityAssessment {
-    assessment.relevance_score = relevance.clamp(0.0, 1.0);
+    assessment.relevance_logit = Some(relevance_logit);
+    assessment.relevance_score = relevance_score.clamp(0.0, 1.0);
     assessment.priority_score =
         assessment.relevance_score * 0.55 + (assessment.score / 100.0) * 0.45;
     if assessment.relevance_score < plan.min_relevance_score {
@@ -262,5 +265,18 @@ mod tests {
             ..FullTextCandidate::default()
         });
         assert!(!assess(&record, &plan()).accepted);
+    }
+
+    #[test]
+    fn relevance_keeps_the_raw_logit_and_normalized_score() {
+        let assessment = QualityAssessment {
+            score: 80.0,
+            accepted: true,
+            ..QualityAssessment::default()
+        };
+        let ranked = add_relevance(assessment, -3.5, 0.029312, &plan());
+        assert_eq!(ranked.relevance_logit, Some(-3.5));
+        assert_eq!(ranked.relevance_score, 0.029312);
+        assert!(!ranked.accepted);
     }
 }

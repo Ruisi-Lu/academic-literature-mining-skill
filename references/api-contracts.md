@@ -18,7 +18,9 @@ base64 image data URL. Embed retrieval questions with `input_type: "query"` and
 `modality: "text"`.
 
 Rerank a text query against passages containing `image` data URLs. Preserve the returned `index`
-when mapping logits back to candidates.
+when mapping logits back to candidates. Preserve both the raw logit and sigmoid-normalized score;
+do not interpret the sigmoid value as a calibrated relevance probability without project-specific
+validation.
 
 The current embeddings request contract accepts text and image inputs, not an
 `application/pdf` data URL. Treat the PDF as the source document and render each complete page to

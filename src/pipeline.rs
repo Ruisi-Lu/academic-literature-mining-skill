@@ -70,6 +70,7 @@ pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> 
     let nvidia = NvidiaClient::new(settings)?;
     let works = state.works_with_statuses(&["discovered", "rejected"])?;
     let mut assessments = Vec::with_capacity(works.len());
+    let mut relevance_scores = Vec::new();
     for (work_id, mut record) in works {
         record.quality = assess(&record, plan);
         assessments.push((work_id, record));
@@ -93,7 +94,9 @@ pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> 
             .await?;
         for ((index, _), score) in eligible.into_iter().zip(scores) {
             let record = &mut chunk[index].1;
-            record.quality = add_relevance(record.quality.clone(), score, plan);
+            relevance_scores.push(score.normalized);
+            record.quality =
+                add_relevance(record.quality.clone(), score.logit, score.normalized, plan);
         }
     }
     assessments.sort_by(|left, right| {
@@ -120,8 +123,34 @@ pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> 
         };
         state.upsert_work(&record, status)?;
     }
+    if selected == 0 {
+        warn!(
+            "{}",
+            zero_selection_diagnostic(&relevance_scores, plan.min_relevance_score)
+        );
+    }
     let disqualified = enrich_selected(state, settings).await?;
     Ok(selected.saturating_sub(disqualified))
+}
+
+fn zero_selection_diagnostic(scores: &[f64], threshold: f64) -> String {
+    if scores.is_empty() {
+        return "screening selected zero papers because none passed the hard academic-value gates; inspect stored rejection reasons before changing thresholds".to_owned();
+    }
+    let minimum = scores.iter().copied().fold(f64::INFINITY, f64::min);
+    let maximum = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let mean = scores.iter().sum::<f64>() / scores.len() as f64;
+    if threshold > 0.0 {
+        format!(
+            "screening selected zero papers after reranking {} eligible records (sigmoid relevance min={minimum:.6}, mean={mean:.6}, max={maximum:.6}, configured threshold={threshold:.6}); reranker sigmoid scores are not universally calibrated—set min_relevance_score to 0.0 for rank-only triage or calibrate a nonzero threshold with labeled positives and negatives",
+            scores.len()
+        )
+    } else {
+        format!(
+            "screening selected zero papers despite rank-only relevance screening of {} eligible records (sigmoid relevance min={minimum:.6}, mean={mean:.6}, max={maximum:.6}); inspect target_papers, post-resolution retraction checks, and stored rejection reasons",
+            scores.len()
+        )
+    }
 }
 
 async fn enrich_selected(state: &State, settings: &Settings) -> Result<usize> {
@@ -769,5 +798,14 @@ mod tests {
         assert!(calls.contains(&"arxiv:2401.00001".to_owned()));
         assert!(calls.contains(&"crossref:10.1000/formal".to_owned()));
         assert!(calls.contains(&"openalex-doi:10.1000/formal".to_owned()));
+    }
+
+    #[test]
+    fn zero_selection_diagnostic_recommends_calibration() {
+        let message = zero_selection_diagnostic(&[0.002083, 0.030157, 0.005980], 0.35);
+        assert!(message.contains("max=0.030157"));
+        assert!(message.contains("configured threshold=0.350000"));
+        assert!(message.contains("min_relevance_score to 0.0"));
+        assert!(message.contains("labeled positives and negatives"));
     }
 }

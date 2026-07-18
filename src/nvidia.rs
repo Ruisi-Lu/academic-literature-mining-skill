@@ -13,6 +13,12 @@ use tracing::warn;
 use crate::config::Settings;
 use crate::util::sigmoid;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RerankScore {
+    pub logit: f64,
+    pub normalized: f64,
+}
+
 #[derive(Clone)]
 pub struct NvidiaClient {
     client: Client,
@@ -79,7 +85,7 @@ impl NvidiaClient {
         Ok(data.into_iter().map(|item| item.embedding).collect())
     }
 
-    pub async fn rerank_text(&self, query: &str, passages: &[String]) -> Result<Vec<f64>> {
+    pub async fn rerank_text(&self, query: &str, passages: &[String]) -> Result<Vec<RerankScore>> {
         let values = passages
             .iter()
             .map(|text| json!({"text": text}))
@@ -92,10 +98,15 @@ impl NvidiaClient {
         for path in paths {
             passages.push(json!({"image": image_data_url(path).await?}));
         }
-        self.rerank(query, passages).await
+        Ok(self
+            .rerank(query, passages)
+            .await?
+            .into_iter()
+            .map(|score| score.normalized)
+            .collect())
     }
 
-    async fn rerank(&self, query: &str, passages: Vec<Value>) -> Result<Vec<f64>> {
+    async fn rerank(&self, query: &str, passages: Vec<Value>) -> Result<Vec<RerankScore>> {
         if passages.is_empty() {
             return Ok(Vec::new());
         }
@@ -107,16 +118,7 @@ impl NvidiaClient {
             "truncate": "END"
         });
         let response: RankingResponse = self.post(&self.settings.rerank_url, &payload).await?;
-        let mut scores = vec![f64::NEG_INFINITY; expected];
-        for ranking in response.rankings {
-            if ranking.index < expected {
-                scores[ranking.index] = sigmoid(ranking.logit);
-            }
-        }
-        if scores.iter().any(|value| !value.is_finite()) {
-            bail!("NVIDIA ranking response omitted one or more passages");
-        }
-        Ok(scores)
+        ordered_rerank_scores(response, expected)
     }
 
     async fn post<T>(&self, url: &str, payload: &Value) -> Result<T>
@@ -215,4 +217,64 @@ struct RankingResponse {
 struct RankingItem {
     index: usize,
     logit: f64,
+}
+
+fn ordered_rerank_scores(response: RankingResponse, expected: usize) -> Result<Vec<RerankScore>> {
+    let mut scores = vec![None; expected];
+    for ranking in response.rankings {
+        if ranking.index < expected {
+            scores[ranking.index] = Some(RerankScore {
+                logit: ranking.logit,
+                normalized: sigmoid(ranking.logit),
+            });
+        }
+    }
+    scores
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .context("NVIDIA ranking response omitted one or more passages")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preserves_raw_and_sigmoid_rerank_scores_in_passage_order() {
+        let scores = ordered_rerank_scores(
+            RankingResponse {
+                rankings: vec![
+                    RankingItem {
+                        index: 1,
+                        logit: -3.0,
+                    },
+                    RankingItem {
+                        index: 0,
+                        logit: 2.0,
+                    },
+                ],
+            },
+            2,
+        )
+        .unwrap();
+        assert_eq!(scores[0].logit, 2.0);
+        assert_eq!(scores[0].normalized, sigmoid(2.0));
+        assert_eq!(scores[1].logit, -3.0);
+        assert_eq!(scores[1].normalized, sigmoid(-3.0));
+    }
+
+    #[test]
+    fn rejects_incomplete_rerank_responses() {
+        let error = ordered_rerank_scores(
+            RankingResponse {
+                rankings: vec![RankingItem {
+                    index: 0,
+                    logit: 1.0,
+                }],
+            },
+            2,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("omitted one or more passages"));
+    }
 }

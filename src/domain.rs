@@ -161,6 +161,8 @@ pub struct QualityAssessment {
     pub tier: String,
     #[serde(default)]
     pub relevance_score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relevance_logit: Option<f64>,
     #[serde(default)]
     pub priority_score: f64,
     #[serde(default)]
@@ -471,7 +473,7 @@ fn default_quality() -> f64 {
 }
 
 fn default_relevance() -> f64 {
-    0.35
+    0.0
 }
 
 fn default_work_type() -> String {
@@ -632,5 +634,17 @@ mod tests {
             discovered_at: "2026-01-01T00:00:00Z".into(),
         };
         assert!(candidate.validate().is_err());
+    }
+
+    #[test]
+    fn defaults_to_rank_only_relevance_screening() {
+        let plan: ResearchPlan = serde_json::from_value(serde_json::json!({
+            "research_question": "question",
+            "queries": ["query"],
+            "date_from": null,
+            "date_to": null
+        }))
+        .unwrap();
+        assert_eq!(plan.min_relevance_score, 0.0);
     }
 }

@@ -75,12 +75,18 @@ and exclusion criteria using:
 
 `nvidia/llama-nemotron-rerank-vl-1b-v2`
 
-Normalize the reranker logit with the sigmoid function. Calculate:
+Preserve both the raw reranker logit and its sigmoid-normalized score. Treat these values primarily
+as ranking signals; the sigmoid score is not a calibrated probability. Calculate:
 
 `priority = 0.55 × relevance + 0.45 × (quality / 100)`
 
-Require both the quality and relevance thresholds. Select only the highest-priority
-`target_papers`; retain rejected records and reasons for auditability.
+Require the quality threshold. Default `min_relevance_score` to `0.0`, which ranks eligible records
+without applying an uncalibrated absolute relevance gate. Use a nonzero relevance threshold only
+after calibrating it on labeled positives, hard negatives, and random negatives for the exact model
+and screening-query formulation. Select only the highest-priority `target_papers`; retain rejected
+records and reasons for auditability. When screening selects zero papers, report the number
+reranked plus the minimum, mean, and maximum sigmoid scores and give an actionable calibration
+warning.
 
 ## Bias controls
 

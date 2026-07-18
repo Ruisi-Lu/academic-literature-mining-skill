@@ -72,6 +72,8 @@ Specify:
 - publication-status policy, with preprints excluded by default unless the plan
   explicitly permits indispensable, clearly labeled exceptions;
 - minimum quality score and corpus size;
+- a `min_relevance_score` of `0.0` for rank-only triage unless a nonzero cutoff
+  has been calibrated on labeled examples for this exact screening query;
 - source-specific queries rather than one broad query;
 - stopping rules so repeated runs are bounded and reproducible.
 

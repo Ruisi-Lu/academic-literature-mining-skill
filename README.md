@@ -140,6 +140,12 @@ Start from `assets/research-plan.example.json`. A plan defines:
 - minimum academic-value and relevance scores;
 - corpus size and discovery stopping limits.
 
+The default `min_relevance_score` is `0.0`: Nemotron relevance scores rank records
+but do not act as an uncalibrated absolute acceptance gate. Set a nonzero value
+only after calibrating the exact screening query with labeled positive and negative
+examples. The canonical record preserves both the raw reranker logit and the
+sigmoid-normalized score.
+
 Every discovery or screening run preserves the normalized active plan and an
 immutable, content-addressed copy under `corpus/metadata/plans/`.
 
