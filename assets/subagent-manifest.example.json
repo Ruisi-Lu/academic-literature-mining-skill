@@ -1,0 +1,50 @@
+{
+  "contract_version": "1.0",
+  "portable_only": true,
+  "instruction": "Translate this contract into the local agent runtime's native subagent manifest. Do not install this JSON verbatim unless the runtime explicitly supports this schema.",
+  "roles": [
+    {
+      "role_id": "academic-search-worker",
+      "purpose": "Discover scholarly candidates and persistent identifiers for one bounded query shard.",
+      "model_class": "budget",
+      "model_selection": {
+        "required_capabilities": [
+          "web_or_http_read",
+          "follow_search_results",
+          "strict_json_output"
+        ],
+        "prefer": "lowest-cost model meeting required capabilities",
+        "forbid_automatic_upgrade": true
+      },
+      "prompt_template": "./search-subagent-prompt.md",
+      "max_concurrency": 4,
+      "max_turns": 12,
+      "timeout_seconds": 600,
+      "tools": {
+        "network_read": [
+          "web_search",
+          "web_open",
+          "http_get"
+        ],
+        "filesystem_write": [
+          "assigned_result_path_only"
+        ],
+        "denied": [
+          "shell_mutation",
+          "docker",
+          "qdrant_write",
+          "secret_read",
+          "external_message",
+          "deployment"
+        ]
+      },
+      "environment": {
+        "inherit": false,
+        "allow": []
+      },
+      "input_contract": "./subagent-task.schema.json",
+      "output_contract": "./subagent-result.schema.json",
+      "output_format": "ndjson"
+    }
+  ]
+}

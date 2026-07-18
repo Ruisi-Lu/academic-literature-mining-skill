@@ -1,0 +1,25 @@
+{
+  "research_question": "How do retrieval-augmented generation systems preserve citation faithfulness in scientific question answering?",
+  "queries": [
+    "retrieval augmented generation citation faithfulness scientific literature",
+    "citation grounded scientific question answering",
+    "evidence attribution scholarly retrieval augmented generation",
+    "hallucinated citations large language models systematic review"
+  ],
+  "inclusion_criteria": [
+    "Directly evaluates citation correctness, attribution, evidence grounding, or scholarly retrieval",
+    "Reports a reproducible method, benchmark, empirical study, systematic review, or foundational theory"
+  ],
+  "exclusion_criteria": [
+    "Editorials, news, slides, posters, and records without an identifiable scholarly work",
+    "Retracted or withdrawn works"
+  ],
+  "date_from": "2015-01-01",
+  "date_to": null,
+  "languages": ["en"],
+  "sources": ["openalex", "crossref", "arxiv"],
+  "include_preprints": true,
+  "target_papers": 200,
+  "min_quality_score": 60,
+  "min_relevance_score": 0.35
+}

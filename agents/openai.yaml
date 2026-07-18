@@ -1,0 +1,4 @@
+interface:
+  display_name: "Academic Literature Mining Skill"
+  short_description: "Mine, validate, archive, and retrieve scholarly literature"
+  default_prompt: "Use $academic-literature-mining to build a high-quality, citation-complete literature corpus for my research question."

@@ -1,0 +1,5 @@
+.env
+.cache/
+corpus/
+qdrant_storage/
+target/
