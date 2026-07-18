@@ -3,7 +3,49 @@
 Install this skill as a Rust application and translate its neutral subagent contract into the
 manifest format supported by the local agent runtime.
 
-## 1. Inspect the local agent runtime
+## 1. Acquire the canonical repository
+
+Use this repository as the only canonical installation source:
+
+```text
+https://github.com/Ruisi-Lu/academic-literature-mining-skill
+```
+
+Do not assume that the repository is already present, and do not invent a skill-installation
+directory. Read the host agent runtime's authoritative documentation or configuration first and
+determine:
+
+1. its native skill root or package-installation mechanism;
+2. whether it accepts a Git repository URL directly;
+3. whether installed skill folder names must match the `name` in `SKILL.md`.
+
+If the runtime accepts Git URLs, install the canonical URL through that native mechanism. Otherwise,
+set `INSTALL_DIR` to the absolute native skill path discovered above. Use
+`academic-literature-mining` as the folder name unless the runtime requires a different mapping:
+
+```bash
+test -n "${INSTALL_DIR:?set INSTALL_DIR to the runtime's native skill path}"
+git clone --depth 1 \
+  https://github.com/Ruisi-Lu/academic-literature-mining-skill.git \
+  "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+```
+
+If `INSTALL_DIR` already exists, do not overwrite or delete it. Confirm that it is a clean Git
+checkout of the canonical repository before updating it:
+
+```bash
+git -C "$INSTALL_DIR" remote get-url origin
+git -C "$INSTALL_DIR" status --short
+git -C "$INSTALL_DIR" pull --ff-only
+```
+
+Stop if the origin differs, the worktree is dirty, or a fast-forward update is impossible. After
+installation, record `git -C "$INSTALL_DIR" rev-parse HEAD` and verify that `SKILL.md`,
+`INSTALL.MD`, `Cargo.toml`, `rust-toolchain.toml`, and `agents/openai.yaml` exist at the repository
+root.
+
+## 2. Inspect the local agent runtime
 
 Before creating a subagent manifest:
 
@@ -18,7 +60,7 @@ Treat [`assets/subagent-manifest.example.json`](assets/subagent-manifest.example
 portable contract, not as a runtime-ready file. Translate its semantics into the runtime's native
 format.
 
-## 2. Map the search-worker contract
+## 3. Map the search-worker contract
 
 Map these concepts to the local manifest:
 
@@ -37,7 +79,7 @@ Map these concepts to the local manifest:
 Do not pass `NVIDIA_API_KEY`, `QDRANT_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, or unrelated
 environment variables to search workers. The coordinator alone imports and verifies results.
 
-## 3. Shard discovery work
+## 4. Shard discovery work
 
 Have the coordinator generate bounded tasks by splitting:
 
@@ -60,7 +102,7 @@ cargo run --release --manifest-path Cargo.toml -- \
 The Rust coordinator resolves persistent identifiers against authoritative metadata, deduplicates
 records, and applies the quality gates. Invalid or unverifiable worker output is rejected.
 
-## 4. Build the Rust CLI
+## 5. Build the Rust CLI
 
 From this skill directory:
 
@@ -83,7 +125,7 @@ NEMOTRON_EMBED_MODEL_ID=nvidia/llama-nemotron-embed-vl-1b-v2
 NEMOTRON_RERANK_MODEL_ID=nvidia/llama-nemotron-rerank-vl-1b-v2
 ```
 
-## 5. Start Qdrant
+## 6. Start Qdrant
 
 Set the same strong `QDRANT_API_KEY` in `.env`, then start the localhost-only service:
 
@@ -93,7 +135,7 @@ docker compose up -d qdrant
 
 Do not expose ports 6333 or 6334 beyond localhost without TLS and network access controls.
 
-## 6. Validate the installation
+## 7. Validate the installation
 
 Download and cache PDFium through the Rust binary, validate NVIDIA configuration, and check
 Qdrant:
@@ -107,7 +149,7 @@ cargo test --locked
 `PDFIUM_AUTO_CACHE_DIR` defaults to a skill-local `.cache/pdfium` in `.env.example`. PDFium
 renders PDF pages to images; the pipeline performs no OCR and extracts no PDF text.
 
-## 7. Run a corpus
+## 8. Run a corpus
 
 ```bash
 cargo run --release --locked -- \
