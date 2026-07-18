@@ -420,50 +420,177 @@ pub async fn import_agent_results(
     Ok(imported)
 }
 
+trait CandidateMetadataResolver {
+    async fn lookup_arxiv(&self, arxiv_id: &str) -> Result<Option<DiscoveredWork>>;
+    async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>>;
+    async fn lookup_openalex(&self, openalex_id: &str) -> Result<Option<DiscoveredWork>>;
+    async fn lookup_openalex_by_doi(&self, doi: &str) -> Result<Option<DiscoveredWork>>;
+}
+
+struct LiveCandidateMetadataResolver<'a> {
+    settings: &'a Settings,
+}
+
+impl CandidateMetadataResolver for LiveCandidateMetadataResolver<'_> {
+    async fn lookup_arxiv(&self, arxiv_id: &str) -> Result<Option<DiscoveredWork>> {
+        lookup_arxiv(self.settings, arxiv_id).await
+    }
+
+    async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+        lookup_crossref(self.settings, doi).await
+    }
+
+    async fn lookup_openalex(&self, openalex_id: &str) -> Result<Option<DiscoveredWork>> {
+        lookup_openalex(self.settings, openalex_id).await
+    }
+
+    async fn lookup_openalex_by_doi(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+        lookup_openalex_by_doi(self.settings, doi).await
+    }
+}
+
 async fn resolve_agent_candidate(
     settings: &Settings,
     candidate: &AgentCandidate,
 ) -> Result<DiscoveredWork> {
-    if let Some(doi) = candidate.doi.as_deref().and_then(normalize_doi) {
-        let mut resolved = lookup_crossref(settings, &doi).await?.with_context(|| {
-            format!("subagent DOI could not be resolved through Crossref: {doi}")
-        })?;
-        if let Some(openalex) = lookup_openalex_by_doi(settings, &doi).await? {
-            merge_discovered(&mut resolved, openalex);
-        }
-        return Ok(resolved);
-    }
+    resolve_agent_candidate_with(&LiveCandidateMetadataResolver { settings }, candidate).await
+}
+
+async fn resolve_agent_candidate_with(
+    resolver: &impl CandidateMetadataResolver,
+    candidate: &AgentCandidate,
+) -> Result<DiscoveredWork> {
+    let mut resolutions = Vec::new();
+    let mut failures = Vec::new();
+    let mut problems = Vec::new();
+
     if let Some(arxiv_id) = candidate.arxiv_id.as_deref().and_then(normalize_arxiv) {
-        let mut resolved = lookup_arxiv(settings, &arxiv_id)
-            .await?
-            .with_context(|| format!("subagent arXiv ID could not be resolved: {arxiv_id}"))?;
-        enrich_resolved_doi(settings, &mut resolved).await?;
-        return Ok(resolved);
+        collect_resolution(
+            "arxiv",
+            &arxiv_id,
+            2,
+            resolver.lookup_arxiv(&arxiv_id).await,
+            &mut resolutions,
+            &mut failures,
+            &mut problems,
+        );
     }
-    let openalex_id = candidate
+
+    let explicit_openalex = candidate
         .openalex_id
         .as_deref()
-        .context("validated candidate lost its OpenAlex ID")?;
-    let mut resolved = lookup_openalex(settings, openalex_id)
-        .await?
-        .with_context(|| format!("subagent OpenAlex ID could not be resolved: {openalex_id}"))?;
-    enrich_resolved_doi(settings, &mut resolved).await?;
+        .and_then(crate::util::normalize_openalex);
+    if let Some(openalex_id) = &explicit_openalex {
+        collect_resolution(
+            "openalex",
+            openalex_id,
+            1,
+            resolver.lookup_openalex(openalex_id).await,
+            &mut resolutions,
+            &mut failures,
+            &mut problems,
+        );
+    }
+
+    let doi = candidate
+        .doi
+        .as_deref()
+        .and_then(normalize_doi)
+        .or_else(|| {
+            resolutions.iter().find_map(|(_, resolution)| {
+                resolution
+                    .record
+                    .ids
+                    .get("doi")
+                    .and_then(|value| normalize_doi(value))
+            })
+        });
+    if let Some(doi) = &doi {
+        collect_resolution(
+            "crossref",
+            doi,
+            0,
+            resolver.lookup_crossref(doi).await,
+            &mut resolutions,
+            &mut failures,
+            &mut problems,
+        );
+
+        if explicit_openalex.is_none() {
+            match resolver.lookup_openalex_by_doi(doi).await {
+                Ok(Some(openalex)) => resolutions.push((1, openalex)),
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(provider = "openalex", identifier = doi, %error, "optional metadata enrichment failed");
+                    failures.push(resolution_failure("openalex", doi, "lookup_failed"));
+                }
+            }
+        }
+    }
+
+    let Some(resolved) = merge_candidate_resolutions(resolutions, failures) else {
+        let detail = if problems.is_empty() {
+            "no valid identifier produced an authoritative record".to_owned()
+        } else {
+            problems.join("; ")
+        };
+        anyhow::bail!("subagent candidate could not be resolved: {detail}");
+    };
     Ok(resolved)
 }
 
-async fn enrich_resolved_doi(settings: &Settings, resolved: &mut DiscoveredWork) -> Result<()> {
-    let Some(doi) = resolved
-        .record
-        .ids
-        .get("doi")
-        .and_then(|value| normalize_doi(value))
-    else {
-        return Ok(());
-    };
-    if let Some(crossref) = lookup_crossref(settings, &doi).await? {
-        merge_discovered(resolved, crossref);
+fn collect_resolution(
+    provider: &str,
+    identifier: &str,
+    precedence: u8,
+    result: Result<Option<DiscoveredWork>>,
+    resolutions: &mut Vec<(u8, DiscoveredWork)>,
+    failures: &mut Vec<RawSourceRecord>,
+    problems: &mut Vec<String>,
+) {
+    match result {
+        Ok(Some(resolution)) => resolutions.push((precedence, resolution)),
+        Ok(None) => {
+            warn!(
+                provider,
+                identifier, "scholarly identifier was not resolved"
+            );
+            failures.push(resolution_failure(provider, identifier, "not_found"));
+            problems.push(format!("{provider}:{identifier} was not found"));
+        }
+        Err(error) => {
+            warn!(provider, identifier, %error, "scholarly identifier lookup failed");
+            failures.push(resolution_failure(provider, identifier, "lookup_failed"));
+            problems.push(format!("{provider}:{identifier} lookup failed"));
+        }
     }
-    Ok(())
+}
+
+fn resolution_failure(provider: &str, identifier: &str, status: &str) -> RawSourceRecord {
+    RawSourceRecord {
+        source: "resolution".to_owned(),
+        source_id: format!("{provider}:{identifier}"),
+        retrieved_at: now(),
+        raw: json!({
+            "provider": provider,
+            "identifier": identifier,
+            "status": status
+        }),
+    }
+}
+
+fn merge_candidate_resolutions(
+    mut resolutions: Vec<(u8, DiscoveredWork)>,
+    failures: Vec<RawSourceRecord>,
+) -> Option<DiscoveredWork> {
+    resolutions.sort_by_key(|(precedence, _)| *precedence);
+    let mut resolutions = resolutions.into_iter();
+    let (_, mut resolved) = resolutions.next()?;
+    for (_, enrichment) in resolutions {
+        merge_discovered(&mut resolved, enrichment);
+    }
+    resolved.raw_records.extend(failures);
+    Some(resolved)
 }
 
 fn merge_discovered(target: &mut DiscoveredWork, enrichment: DiscoveredWork) {
@@ -497,4 +624,150 @@ pub async fn run_all(
         "corpus_audit": audit,
         "state": state.summary()?
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{FullTextCandidate, WorkRecord};
+    use std::sync::Mutex;
+
+    fn discovered(record: WorkRecord, source: &str, source_id: &str) -> DiscoveredWork {
+        DiscoveredWork {
+            record,
+            raw_records: vec![RawSourceRecord {
+                source: source.to_owned(),
+                source_id: source_id.to_owned(),
+                retrieved_at: "2026-01-01T00:00:00Z".to_owned(),
+                raw: json!({"source": source}),
+            }],
+        }
+    }
+
+    struct FakeCandidateMetadataResolver {
+        arxiv: DiscoveredWork,
+        crossref: DiscoveredWork,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl CandidateMetadataResolver for FakeCandidateMetadataResolver {
+        async fn lookup_arxiv(&self, arxiv_id: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls.lock().unwrap().push(format!("arxiv:{arxiv_id}"));
+            Ok(Some(self.arxiv.clone()))
+        }
+
+        async fn lookup_crossref(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls.lock().unwrap().push(format!("crossref:{doi}"));
+            Ok(Some(self.crossref.clone()))
+        }
+
+        async fn lookup_openalex(&self, openalex_id: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("openalex:{openalex_id}"));
+            Ok(None)
+        }
+
+        async fn lookup_openalex_by_doi(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("openalex-doi:{doi}"));
+            anyhow::bail!("simulated optional enrichment failure")
+        }
+    }
+
+    #[tokio::test]
+    async fn resolves_and_merges_every_supplied_candidate_identifier() {
+        let mut crossref = WorkRecord::new("crossref", "10.1000/formal");
+        crossref
+            .ids
+            .insert("doi".to_owned(), "10.1000/formal".to_owned());
+        crossref.title = "A formally published study".to_owned();
+        crossref.work_type = "article-journal".to_owned();
+        crossref.container_title = "Journal of Evidence".to_owned();
+        crossref.publisher = "Scholarly Publisher".to_owned();
+
+        let mut arxiv = WorkRecord::new("arxiv", "2401.00001v2");
+        arxiv
+            .ids
+            .insert("doi".to_owned(), "10.1000/formal".to_owned());
+        arxiv
+            .ids
+            .insert("arxiv".to_owned(), "2401.00001v2".to_owned());
+        arxiv.title = "A formally published study".to_owned();
+        arxiv.abstract_text = "The repository supplies the screening abstract.".to_owned();
+        arxiv.work_type = "preprint".to_owned();
+        arxiv.fulltext_candidates.push(FullTextCandidate {
+            url: "https://arxiv.org/pdf/2401.00001v2".to_owned(),
+            source: "arxiv".to_owned(),
+            authorized: true,
+            ..FullTextCandidate::default()
+        });
+
+        let resolver = FakeCandidateMetadataResolver {
+            arxiv: discovered(arxiv, "arxiv", "2401.00001v2"),
+            crossref: discovered(crossref, "crossref", "10.1000/formal"),
+            calls: Mutex::new(Vec::new()),
+        };
+        let candidate = AgentCandidate {
+            task_id: "task".to_owned(),
+            query: "query".to_owned(),
+            source: "crossref".to_owned(),
+            title: "A formally published study".to_owned(),
+            doi: Some("10.1000/formal".to_owned()),
+            arxiv_id: Some("2401.00001".to_owned()),
+            openalex_id: None,
+            landing_url: None,
+            evidence_urls: vec!["https://doi.org/10.1000/formal".to_owned()],
+            discovered_at: "2026-01-01T00:00:00Z".to_owned(),
+        };
+
+        let merged = resolve_agent_candidate_with(&resolver, &candidate)
+            .await
+            .unwrap();
+
+        assert_eq!(merged.record.ids["doi"], "10.1000/formal");
+        assert_eq!(merged.record.ids["arxiv"], "2401.00001v2");
+        assert_eq!(merged.record.work_type, "article-journal");
+        assert_eq!(merged.record.container_title, "Journal of Evidence");
+        assert_eq!(
+            merged.record.abstract_text,
+            "The repository supplies the screening abstract."
+        );
+        assert!(
+            merged
+                .record
+                .fulltext_candidates
+                .iter()
+                .any(|candidate| candidate.source == "arxiv" && candidate.authorized)
+        );
+        assert!(
+            merged
+                .record
+                .provenance
+                .iter()
+                .any(|source| source.source == "crossref")
+        );
+        assert!(
+            merged
+                .record
+                .provenance
+                .iter()
+                .any(|source| source.source == "arxiv")
+        );
+        assert!(
+            merged
+                .raw_records
+                .iter()
+                .any(|raw| raw.source == "resolution"
+                    && raw.source_id == "openalex:10.1000/formal"
+                    && raw.raw["status"] == "lookup_failed")
+        );
+        let calls = resolver.calls.lock().unwrap();
+        assert!(calls.contains(&"arxiv:2401.00001".to_owned()));
+        assert!(calls.contains(&"crossref:10.1000/formal".to_owned()));
+        assert!(calls.contains(&"openalex-doi:10.1000/formal".to_owned()));
+    }
 }
