@@ -1,6 +1,6 @@
 ---
 name: academic-literature-mining
-description: Mine, screen, download, preserve, multimodally index, and retrieve academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, and Qdrant. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, preserve authorized PDFs and authoritative citation metadata, import subagent search results, retrieve evidence from native-text-plus-image PDF pages without OCR, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
+description: Mine, screen, download, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, and SQLite relational state. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, preserve authorized PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
 ---
 
 # Academic Literature Mining
@@ -49,6 +49,11 @@ safely.
 - Store the canonical citation object, source records, identifiers, license,
   provenance, quality signals, PDF checksum, and page coordinates alongside every
   indexed point.
+- Route every live corpus lookup through
+  [references/query-routing.md](references/query-routing.md). Use Qdrant plus
+  Nemotron reranking for semantic evidence and SQLite-backed CLI commands for
+  metadata, provenance, state, and audits. Never search exported or preserved JSON
+  files as a substitute.
 - Treat retrieval output as evidence candidates. Re-open the original PDF before
   quoting or making a claim in a manuscript.
 
@@ -157,19 +162,45 @@ cargo run --release --locked -- ingest
 Inspect `status` and the audit output after every large run. Do not treat a network
 retry, a missing abstract, or an inaccessible PDF as a successful source.
 
-## Retrieve literature
+## Query the live corpus
+
+Read [references/query-routing.md](references/query-routing.md) before querying a
+corpus or drafting from it. Classify the lookup before selecting a tool:
+
+- use `query` for semantic passage, claim, method, result, table, figure,
+  limitation, or counterevidence retrieval;
+- use `catalog` for structured SQLite filters and corpus listings;
+- use `inspect-work` for one known `work_id`, canonical metadata, provenance, PDF
+  identity, and page locators;
+- use `status` and `audit` for live corpus state and integrity.
+
+Do not inspect `exports/*.json*`, `metadata/**/*.json`, raw provider JSON,
+`state.sqlite3`, extracted page text, or rendered-page directories to discover
+evidence. Do not fall back to those files when a live query fails.
 
 Search the multimodal page corpus:
 
 ```bash
 cargo run --release --locked -- \
-  query "state the evidence question precisely" --top-k 20
+  query "state one atomic evidence question precisely" \
+  --top-k 20 --candidate-limit 80
+```
+
+Query relational metadata:
+
+```bash
+cargo run --release --locked -- \
+  catalog --workspace corpus --status indexed --limit 50
+cargo run --release --locked -- \
+  inspect-work 'doi:10.1234/example' --workspace corpus
 ```
 
 The CLI embeds the text query, retrieves candidate PDF pages from Qdrant, then
 reranks each page using the same native-text-plus-image representation used for
 indexing. Image-only pages remain supported. Use the returned work ID, page
 number, DOI, and canonical citation to inspect and cite the original source.
+Join a relevant vector result to SQLite with `inspect-work`, then open the exact
+preserved PDF page. Treat vector and rerank scores only as ordering signals.
 
 ## Export citations and audit provenance
 
@@ -185,7 +216,9 @@ Export:
 - an audit report covering metadata, provenance, PDF checksums, and indexing state.
 
 Run `audit` immediately before manuscript work. Never create a citation from an
-embedded page alone when the canonical record is incomplete.
+embedded page alone when the canonical record is incomplete. Read exported files
+only for explicit citation-manager handoff, requested exchange formats, or audit
+review; never use them for corpus discovery or semantic evidence retrieval.
 
 ## Consult API contracts
 

@@ -10,7 +10,7 @@ use crate::config::Settings;
 use crate::domain::ResearchPlan;
 use crate::pipeline;
 use crate::qdrant::QdrantClient;
-use crate::state::State;
+use crate::state::{CatalogFilters, State};
 
 #[derive(Debug, Parser)]
 #[command(name = "litmine", version, about)]
@@ -92,6 +92,30 @@ enum Command {
         top_k: usize,
         #[arg(long, default_value_t = 50)]
         candidate_limit: usize,
+    },
+    /// Query live SQLite corpus metadata; never reads exported JSON or JSONL archives.
+    Catalog {
+        #[arg(long, default_value = "corpus")]
+        workspace: PathBuf,
+        /// Include only these exact statuses; repeat or use comma-separated values.
+        #[arg(long, value_delimiter = ',')]
+        status: Vec<String>,
+        #[arg(long)]
+        year_from: Option<u32>,
+        #[arg(long)]
+        year_to: Option<u32>,
+        #[arg(long)]
+        min_quality_score: Option<f64>,
+        #[arg(long)]
+        title_contains: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
+    /// Inspect one work and its provenance/page locators from live SQLite state.
+    InspectWork {
+        work_id: String,
+        #[arg(long, default_value = "corpus")]
+        workspace: PathBuf,
     },
     /// Export CSL JSON, BibTeX, RIS, canonical JSONL, and corpus audits.
     Export {
@@ -204,6 +228,33 @@ pub async fn run() -> Result<()> {
             candidate_limit,
         } => {
             serde_json::to_value(pipeline::query(&settings, &query, top_k, candidate_limit).await?)?
+        }
+        Command::Catalog {
+            workspace,
+            status,
+            year_from,
+            year_to,
+            min_quality_score,
+            title_contains,
+            limit,
+        } => {
+            let state = State::open_existing(&workspace)?;
+            serde_json::to_value(state.catalog(&CatalogFilters {
+                statuses: status,
+                year_from,
+                year_to,
+                min_quality_score,
+                title_contains,
+                limit,
+            })?)?
+        }
+        Command::InspectWork { work_id, workspace } => {
+            let state = State::open_existing(&workspace)?;
+            serde_json::to_value(
+                state
+                    .inspect_work(&work_id)?
+                    .ok_or_else(|| anyhow::anyhow!("work not found in SQLite: {work_id}"))?,
+            )?
         }
         Command::Export { workspace } => {
             let state = State::open(&workspace)?;

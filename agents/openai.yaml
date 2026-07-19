@@ -1,4 +1,4 @@
 interface:
-  display_name: "Academic Literature Mining Skill"
-  short_description: "Mine, validate, archive, and retrieve scholarly literature"
-  default_prompt: "Use $academic-literature-mining to build a high-quality, citation-complete literature corpus for my research question."
+  display_name: "Academic Literature Mining"
+  short_description: "Mine and query citation-safe scholarly evidence"
+  default_prompt: "Use $academic-literature-mining to query live Qdrant evidence and SQLite provenance for my research question without scanning archive JSON."

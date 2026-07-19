@@ -203,6 +203,28 @@ reranks the same native-text-plus-image page representations. Returned results
 include the work ID, one-based PDF page number, canonical citation, original PDF
 path and URL, SHA-256, and license metadata.
 
+Query live relational metadata without scanning exports:
+
+```bash
+target/release/litmine catalog \
+  --workspace corpus \
+  --status indexed \
+  --year-from 2020 \
+  --min-quality-score 65 \
+  --limit 50
+
+target/release/litmine inspect-work \
+  'doi:10.1234/example' \
+  --workspace corpus
+```
+
+Use `query` for evidence by meaning, `catalog` for structured filters, and
+`inspect-work` for the canonical metadata and provenance of a known result.
+`catalog` and `inspect-work` query `state.sqlite3` through the Rust runtime; they
+never read exported JSON or JSONL. See
+[`references/query-routing.md`](references/query-routing.md) for the mandatory
+agent query policy.
+
 ## Academic-value policy
 
 Hard exclusions include:
@@ -275,6 +297,10 @@ Exports are written under `corpus/exports/`:
 | `records.jsonl` | Lossless canonical corpus exchange |
 | `citation-audit.json` | Missing citation-field review |
 | `corpus-audit.json` | Provenance, PDF checksum, page-count, and indexing audit |
+
+These files are export and interchange artifacts, not live retrieval indexes.
+Do not scan them to answer research questions; use Qdrant-backed `query` and
+SQLite-backed `catalog` or `inspect-work`.
 
 Always re-open the preserved original PDF before quoting a passage in a
 manuscript.

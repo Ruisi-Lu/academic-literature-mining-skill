@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use serde::Serialize;
 
 use crate::domain::{PageRecord, PdfArtifact, RawSourceRecord, ResearchPlan, WorkRecord};
 use crate::util::{atomic_json, now, sha256_bytes};
@@ -23,6 +24,62 @@ pub struct StoredArtifactStatus {
     pub declared_page_count: u64,
     pub stored_page_count: u64,
     pub indexed_page_count: u64,
+    pub last_error: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogFilters {
+    pub statuses: Vec<String>,
+    pub year_from: Option<u32>,
+    pub year_to: Option<u32>,
+    pub min_quality_score: Option<f64>,
+    pub title_contains: Option<String>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkSummary {
+    pub work_id: String,
+    pub status: String,
+    pub title: String,
+    pub publication_year: Option<u32>,
+    pub work_type: String,
+    pub doi: Option<String>,
+    pub venue: String,
+    pub quality_score: f64,
+    pub relevance_score: f64,
+    pub priority_score: f64,
+    pub has_pdf: bool,
+    pub page_count: u64,
+    pub indexed_page_count: u64,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SourceLocator {
+    pub source: String,
+    pub source_id: String,
+    pub retrieved_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct PageLocator {
+    pub page_id: String,
+    pub page_number: u32,
+    pub image_path: String,
+    pub image_sha256: String,
+    pub width: u32,
+    pub height: u32,
+    pub indexed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkDetails {
+    pub summary: WorkSummary,
+    pub canonical_record: WorkRecord,
+    pub pdf_artifact: Option<PdfArtifact>,
+    pub provenance_records: Vec<SourceLocator>,
+    pub pages: Vec<PageLocator>,
     pub last_error: String,
 }
 
@@ -99,6 +156,23 @@ impl State {
             "#,
         )?;
         ensure_page_text_column(&connection)?;
+        Ok(Self {
+            connection,
+            workspace,
+        })
+    }
+
+    pub fn open_existing(workspace: &Path) -> Result<Self> {
+        let workspace = fs::canonicalize(workspace)
+            .with_context(|| format!("resolve existing workspace {}", workspace.display()))?;
+        let database = workspace.join("state.sqlite3");
+        if !database.is_file() {
+            anyhow::bail!(
+                "live SQLite state does not exist at {}; initialize or mine the corpus first",
+                database.display()
+            );
+        }
+        let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self {
             connection,
             workspace,
@@ -213,6 +287,271 @@ impl State {
             .optional()?;
         json.map(|value| serde_json::from_str(&value).map_err(Into::into))
             .transpose()
+    }
+
+    pub fn catalog(&self, filters: &CatalogFilters) -> Result<Vec<WorkSummary>> {
+        if filters.limit == 0 {
+            anyhow::bail!("catalog limit must be positive");
+        }
+        if filters
+            .year_from
+            .zip(filters.year_to)
+            .is_some_and(|(from, to)| from > to)
+        {
+            anyhow::bail!("year_from must be less than or equal to year_to");
+        }
+        if filters
+            .min_quality_score
+            .is_some_and(|score| !(0.0..=100.0).contains(&score))
+        {
+            anyhow::bail!("min_quality_score must be between 0 and 100");
+        }
+
+        let title_filter = filters
+            .title_contains
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
+        let mut statement = self.connection.prepare(
+            r#"
+            SELECT
+                w.work_id,
+                w.canonical_json,
+                w.status,
+                w.quality_score,
+                w.relevance_score,
+                w.priority_score,
+                COALESCE(w.pdf_path, ''),
+                w.page_count,
+                COALESCE(SUM(CASE WHEN p.indexed_at IS NOT NULL THEN 1 ELSE 0 END), 0),
+                w.updated_at
+            FROM works w
+            LEFT JOIN pages p ON p.work_id=w.work_id
+            GROUP BY w.work_id
+            ORDER BY w.priority_score DESC, w.work_id
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, f64>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, u64>(7)?,
+                row.get::<_, u64>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
+
+        let mut summaries = Vec::new();
+        for row in rows {
+            let (
+                work_id,
+                canonical_json,
+                status,
+                quality_score,
+                relevance_score,
+                priority_score,
+                pdf_path,
+                page_count,
+                indexed_page_count,
+                updated_at,
+            ) = row?;
+            if !filters.statuses.is_empty()
+                && !filters
+                    .statuses
+                    .iter()
+                    .any(|candidate| candidate == &status)
+            {
+                continue;
+            }
+            let record: WorkRecord = serde_json::from_str(&canonical_json)?;
+            let year = record.year();
+            if filters
+                .year_from
+                .is_some_and(|minimum| year.is_none_or(|value| value < minimum))
+                || filters
+                    .year_to
+                    .is_some_and(|maximum| year.is_none_or(|value| value > maximum))
+                || filters
+                    .min_quality_score
+                    .is_some_and(|minimum| quality_score < minimum)
+                || title_filter
+                    .as_ref()
+                    .is_some_and(|needle| !record.title.to_lowercase().contains(needle))
+            {
+                continue;
+            }
+            summaries.push(work_summary(
+                work_id,
+                status,
+                &record,
+                quality_score,
+                relevance_score,
+                priority_score,
+                !pdf_path.is_empty(),
+                page_count,
+                indexed_page_count,
+                updated_at,
+            ));
+            if summaries.len() == filters.limit {
+                break;
+            }
+        }
+        Ok(summaries)
+    }
+
+    pub fn inspect_work(&self, work_id: &str) -> Result<Option<WorkDetails>> {
+        type WorkRow = (
+            String,
+            String,
+            f64,
+            f64,
+            f64,
+            String,
+            String,
+            String,
+            String,
+            u64,
+            u64,
+            String,
+            String,
+        );
+
+        let row: Option<WorkRow> = self
+            .connection
+            .query_row(
+                r#"
+                SELECT
+                    w.canonical_json,
+                    w.status,
+                    w.quality_score,
+                    w.relevance_score,
+                    w.priority_score,
+                    COALESCE(w.pdf_url, ''),
+                    COALESCE(w.pdf_path, ''),
+                    COALESCE(w.pdf_sha256, ''),
+                    COALESCE(w.pdf_license, ''),
+                    w.page_count,
+                    COALESCE(SUM(CASE WHEN p.indexed_at IS NOT NULL THEN 1 ELSE 0 END), 0),
+                    COALESCE(w.last_error, ''),
+                    w.updated_at
+                FROM works w
+                LEFT JOIN pages p ON p.work_id=w.work_id
+                WHERE w.work_id=?1
+                GROUP BY w.work_id
+                "#,
+                [work_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                        row.get(11)?,
+                        row.get(12)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            canonical_json,
+            status,
+            quality_score,
+            relevance_score,
+            priority_score,
+            pdf_url,
+            pdf_path,
+            pdf_sha256,
+            pdf_license,
+            page_count,
+            indexed_page_count,
+            last_error,
+            updated_at,
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let canonical_record: WorkRecord = serde_json::from_str(&canonical_json)?;
+        let summary = work_summary(
+            work_id.to_owned(),
+            status,
+            &canonical_record,
+            quality_score,
+            relevance_score,
+            priority_score,
+            !pdf_path.is_empty(),
+            page_count,
+            indexed_page_count,
+            updated_at,
+        );
+
+        let mut source_statement = self.connection.prepare(
+            r#"
+            SELECT source, source_id, retrieved_at
+            FROM source_records
+            WHERE work_id=?1
+            ORDER BY source, source_id
+            "#,
+        )?;
+        let provenance_records = source_statement
+            .query_map([work_id], |row| {
+                Ok(SourceLocator {
+                    source: row.get(0)?,
+                    source_id: row.get(1)?,
+                    retrieved_at: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut page_statement = self.connection.prepare(
+            r#"
+            SELECT page_id, page_number, image_path, image_sha256,
+                   width, height, indexed_at
+            FROM pages
+            WHERE work_id=?1
+            ORDER BY page_number
+            "#,
+        )?;
+        let pages = page_statement
+            .query_map([work_id], |row| {
+                Ok(PageLocator {
+                    page_id: row.get(0)?,
+                    page_number: row.get(1)?,
+                    image_path: row.get(2)?,
+                    image_sha256: row.get(3)?,
+                    width: row.get(4)?,
+                    height: row.get(5)?,
+                    indexed_at: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let pdf_artifact = (!pdf_path.is_empty()).then_some(PdfArtifact {
+            url: pdf_url,
+            path: pdf_path,
+            sha256: pdf_sha256,
+            license: pdf_license,
+        });
+        Ok(Some(WorkDetails {
+            summary,
+            canonical_record,
+            pdf_artifact,
+            provenance_records,
+            pages,
+            last_error,
+        }))
     }
 
     pub fn mark_downloaded(
@@ -408,6 +747,37 @@ impl State {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn work_summary(
+    work_id: String,
+    status: String,
+    record: &WorkRecord,
+    quality_score: f64,
+    relevance_score: f64,
+    priority_score: f64,
+    has_pdf: bool,
+    page_count: u64,
+    indexed_page_count: u64,
+    updated_at: String,
+) -> WorkSummary {
+    WorkSummary {
+        work_id,
+        status,
+        title: record.title.clone(),
+        publication_year: record.year(),
+        work_type: record.work_type.clone(),
+        doi: record.ids.get("doi").cloned(),
+        venue: record.container_title.clone(),
+        quality_score,
+        relevance_score,
+        priority_score,
+        has_pdf,
+        page_count,
+        indexed_page_count,
+        updated_at,
+    }
+}
+
 fn ensure_page_text_column(connection: &Connection) -> Result<()> {
     let mut statement = connection.prepare("PRAGMA table_info(pages)")?;
     let columns = statement
@@ -506,5 +876,88 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert!(columns.iter().any(|column| column == "page_text"));
+    }
+
+    #[test]
+    fn catalog_and_inspect_query_sqlite_without_reading_export_archives() {
+        let temporary = tempdir().unwrap();
+        let workspace = temporary.path().join("corpus");
+        let mut state = State::open(&workspace).unwrap();
+        let mut record = WorkRecord::new("crossref", "10.1000/live");
+        record.ids.insert("doi".into(), "10.1000/live".into());
+        record.title = "Live database record".into();
+        record.work_type = "article-journal".into();
+        record.container_title = "Journal of Tests".into();
+        record.issued.date_parts = vec![vec![2025]];
+        record.quality.score = 88.0;
+        record.quality.relevance_score = 0.8;
+        record.quality.priority_score = 0.9;
+        let work_id = state.upsert_work(&record, "selected").unwrap();
+        state
+            .store_raw(
+                &work_id,
+                &RawSourceRecord {
+                    source: "crossref".into(),
+                    source_id: "10.1000/live".into(),
+                    retrieved_at: "2026-07-20T00:00:00Z".into(),
+                    raw: serde_json::json!({"title": "raw provider record"}),
+                },
+            )
+            .unwrap();
+        let page = PageRecord {
+            page_id: "page-live".into(),
+            work_id: work_id.clone(),
+            page_number: 3,
+            image_path: workspace.join("pages/page-live.jpg").display().to_string(),
+            image_sha256: "page-sha".into(),
+            page_text: "Text that must not leak through metadata inspection".into(),
+            width: 100,
+            height: 200,
+            indexed_at: None,
+        };
+        state
+            .replace_pages(&work_id, std::slice::from_ref(&page))
+            .unwrap();
+        state.mark_pages_indexed(&[page]).unwrap();
+
+        fs::write(
+            workspace.join("exports/records.jsonl"),
+            r#"{"title":"Stale archive-only record"}"#,
+        )
+        .unwrap();
+
+        let catalog = state
+            .catalog(&CatalogFilters {
+                statuses: vec!["indexed".into()],
+                year_from: Some(2025),
+                year_to: Some(2025),
+                min_quality_score: Some(80.0),
+                title_contains: Some("live database".into()),
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0].title, "Live database record");
+
+        let details = state.inspect_work(&work_id).unwrap().unwrap();
+        assert_eq!(details.provenance_records.len(), 1);
+        assert_eq!(details.pages[0].page_number, 3);
+        let serialized = serde_json::to_value(details).unwrap();
+        assert!(serialized.pointer("/pages/0/page_text").is_none());
+        assert!(serialized.get("raw_json").is_none());
+        assert!(!serialized.to_string().contains("Stale archive-only record"));
+        assert!(
+            !serialized
+                .to_string()
+                .contains("Text that must not leak through metadata inspection")
+        );
+    }
+
+    #[test]
+    fn opening_live_query_state_never_creates_a_missing_workspace() {
+        let temporary = tempdir().unwrap();
+        let missing = temporary.path().join("missing-corpus");
+        assert!(State::open_existing(&missing).is_err());
+        assert!(!missing.exists());
     }
 }
