@@ -1,6 +1,31 @@
 name: academic-literature-mining
 
 services:
+  litmine:
+    image: "${LITMINE_IMAGE:-ghcr.io/ruisi-lu/academic-literature-mining-skill}:${LITMINE_VERSION:-0.1.1}"
+    profiles: ["cli"]
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+      PDFIUM_AUTO_CACHE_DIR: "/opt/litmine/pdfium"
+      HOME: "/tmp"
+    user: "${LITMINE_UID:-1000}:${LITMINE_GID:-1000}"
+    working_dir: /workspace
+    volumes:
+      - type: bind
+        source: .
+        target: /workspace
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   qdrant:
     image: qdrant/qdrant:v1.18.2
     container_name: academic-literature-qdrant

@@ -1,0 +1,9 @@
+*
+!Cargo.lock
+!Cargo.toml
+!Dockerfile
+!LICENSE
+!README.md
+!rust-toolchain.toml
+!src/
+!src/**
