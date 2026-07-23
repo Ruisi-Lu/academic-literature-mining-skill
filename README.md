@@ -2,8 +2,10 @@
 
 A citation-complete, agent-assisted scholarly literature mining system built in
 Rust. It discovers academically valuable papers, verifies persistent identifiers,
-downloads authorized PDFs, indexes complete PDF pages as native text plus page
-images with NVIDIA Nemotron, and stores retrievable evidence in Qdrant.
+downloads authorized PDFs, optionally hands subscription PDFs off through a
+lawful user or browser-assisted library workflow, indexes complete PDF pages as
+native text plus page images with NVIDIA Nemotron, and stores retrievable evidence
+in Qdrant.
 
 ## Why this project exists
 
@@ -24,6 +26,9 @@ Key properties:
   image; pages without usable text automatically use image-only input.
 - Original PDFs, checksums, license assertions, raw metadata, and provenance are
   preserved.
+- Deliberate paywalled discovery and retention are disabled by default and use a
+  resumable publisher-link handoff, optionally assisted DOI-by-DOI by an authorized
+  existing Chrome session.
 - Qdrant runs through Docker Compose and is bound to localhost by default.
 - CSL JSON, BibTeX, RIS, canonical JSONL, and corpus audits are exported.
 - SQLite-backed resumable stages make large corpus runs recoverable.
@@ -36,6 +41,8 @@ flowchart LR
     C[Crossref / OpenAlex / arXiv] -->|Authoritative metadata| B
     B --> D{Academic value<br/>and relevance gates}
     D -->|Accepted + authorized| E[Original PDF archive]
+    D -->|Opt-in restricted access| M[User / library-linked Chrome]
+    M --> E
     E --> F[PDFium native text + full-page image]
     F --> G[Nemotron Embed VL text_image]
     G --> H[(Qdrant)]
@@ -79,6 +86,12 @@ OPENALEX_API_KEY=your-openalex-key
 CONTACT_EMAIL=you@example.edu
 QDRANT_API_KEY=use-a-long-random-secret
 ```
+
+Get the NVIDIA key from <https://build.nvidia.com/settings/api-keys> and the
+OpenAlex key from <https://openalex.org/settings/api>. `QDRANT_API_KEY` is a
+locally generated secret for the bundled self-hosted service, not a vendor-issued
+token. See [`references/user-interaction.md`](references/user-interaction.md) for
+stage-specific setup and safe secret handling.
 
 Build the CLI and start Qdrant:
 
@@ -138,6 +151,9 @@ Start from `assets/research-plan.example.json`. A plan defines:
 - explicit inclusion and exclusion criteria;
 - accepted date range, languages, and sources;
 - whether preprints are eligible;
+- whether paywalled records are eligible for a manual handoff (`include_paywalled`);
+- whether an already authenticated library-linked Chrome session may resolve
+  pending DOIs (`use_google_scholar_library_access`);
 - minimum academic-value and relevance scores;
 - corpus size and discovery stopping limits.
 
@@ -166,6 +182,20 @@ target/release/litmine export   --workspace corpus
 target/release/litmine audit    --workspace corpus
 target/release/litmine status   --workspace corpus
 ```
+
+With `include_paywalled: true`, `download` returns a `manual_downloads` array for
+works it cannot fetch automatically. Each entry contains official publisher/DOI
+links, an exact path under `corpus/pdfs/`, and—when separately enabled—a Google
+Scholar DOI query URL. The user can place the PDF themselves, or an authorized
+existing `chrome-devtools` MCP can follow visible Scholar library links one DOI at
+a time. Rerunning `download` validates the regular non-symlink PDF, records its
+SHA-256 and manual provenance, and advances it from `awaiting-manual-download` to
+`downloaded` before `render`, `ingest`, `audit`, and `export` resume.
+
+Chrome DevTools MCP remains outside this repository. The agent may install it at
+user scope only after explicit authorization and must use proto-managed Node/npm;
+otherwise it provides setup guidance and falls back to the manual handoff. See
+[`references/chrome-library-access.md`](references/chrome-library-access.md).
 
 `refresh-metadata` re-resolves DOI-backed arXiv preprints through Crossref. When
 Crossref verifies a journal article or archival conference paper, its type,
@@ -234,7 +264,8 @@ Hard exclusions include:
 - missing title, identifiable authorship, publication year, or screening abstract;
 - invalid persistent identifiers;
 - disallowed language, date range, or preprint status;
-- missing independently authorized PDF;
+- missing independently authorized PDF unless the plan explicitly enables the
+  manual paywalled-PDF workflow;
 - quality or relevance below the research-plan thresholds.
 
 The 0–100 quality score combines scholarly type, persistent identifiers, metadata
@@ -312,7 +343,10 @@ manuscript.
 - Search subagents do not inherit coordinator environment variables.
 - Download redirects are checked and local/private-address targets are blocked.
 - Only openly licensed, open-access asserted, or recognized public-repository
-  PDFs are eligible.
+  PDFs are eligible for automatic direct download.
+- User-supplied or library-assisted subscription PDFs require explicit opt-in,
+  lawful access, and permission for configured external processing. They are
+  recorded as `user-supplied; reuse rights not established` and not redistributed.
 - Crossref TDM links alone are not treated as proof of open access.
 - Sci-Hub, access-control bypasses, and paywall scraping are explicitly excluded.
 - Secrets belong only in `.env`, which is ignored by Git.

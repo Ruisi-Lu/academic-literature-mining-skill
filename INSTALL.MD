@@ -118,6 +118,16 @@ The project follows the official Rust stable channel through
 without rustup, install an equivalent current stable toolchain and run Cargo
 directly.
 
+Read [`references/user-interaction.md`](references/user-interaction.md) and guide the user through
+every missing parameter. Do not ask them to paste a key into chat or expose secret values while
+checking configuration. In particular:
+
+- get `NVIDIA_API_KEY` from <https://build.nvidia.com/settings/api-keys>;
+- get `OPENALEX_API_KEY` from <https://openalex.org/settings/api> when OpenAlex is selected;
+- set `CONTACT_EMAIL` for Crossref requests;
+- ask before enabling optional Semantic Scholar enrichment and, if accepted, request its key at
+  <https://www.semanticscholar.org/product/api#api-key-form>.
+
 Set real secrets in `.env`. Keep both required model IDs unchanged:
 
 ```dotenv
@@ -127,7 +137,10 @@ NEMOTRON_RERANK_MODEL_ID=nvidia/llama-nemotron-rerank-vl-1b-v2
 
 ## 6. Start Qdrant
 
-Set the same strong `QDRANT_API_KEY` in `.env`, then start the localhost-only service:
+The bundled self-hosted Qdrant does not issue a vendor token. Guide the user to generate a strong
+local secret (for example, `openssl rand -hex 32`) and set it as `QDRANT_API_KEY` in `.env`.
+Docker Compose and the Rust client read the same value. Explain that the next command starts a
+persistent localhost-only service, then start it after the user is ready:
 
 ```bash
 docker compose up -d qdrant
@@ -137,8 +150,8 @@ Do not expose ports 6333 or 6334 beyond localhost without TLS and network access
 
 ## 7. Validate the installation
 
-Download and cache PDFium through the Rust binary, validate NVIDIA configuration, and check
-Qdrant:
+Explain that `--prepare-pdfium` downloads and caches a native PDFium library. Ask before enabling
+that switch, then validate NVIDIA configuration and Qdrant:
 
 ```bash
 cargo run --release --locked -- \
@@ -153,6 +166,11 @@ usable text layer.
 
 ## 8. Run a corpus
 
+Before editing the plan, ask whether to enable `include_preprints`, `include_paywalled`,
+`use_google_scholar_library_access`, and optional Semantic Scholar enrichment. All are disabled by
+default. Enabling paywalled access requires the lawful-access and external-processing confirmation
+in [`references/user-interaction.md`](references/user-interaction.md).
+
 ```bash
 cargo run --release --locked -- \
   mine --plan assets/research-plan.example.json \
@@ -161,6 +179,19 @@ cargo run --release --locked -- \
 
 For controlled or resumable execution, run `discover`, `screen`, `download`, `render`, `ingest`,
 and `export` separately. Inspect `target/release/litmine --help` for exact options.
+
+When paywalled searching is enabled, `download` returns official publisher/DOI links and one exact
+destination path per pending PDF. If the separately approved Google Scholar option is enabled,
+follow [`references/chrome-library-access.md`](references/chrome-library-access.md); otherwise
+present the links and paths to the user and pause. After the file is placed, rerun `download` to
+validate, hash, and register it, then continue with `render`, `ingest`, `audit`, and `export`.
+Never automate restricted access or receive publisher credentials.
+
+Chrome DevTools MCP is a user-scope optional dependency, not a repository dependency. Do not add
+Node/npm, `.prototools`, Chrome settings, or an MCP manifest here. If `chrome-devtools` is absent,
+explain the official setup and security implications, request explicit authorization, and only
+then install it through the host runtime with proto-managed Node/npm. Reload the runtime and verify
+the tools before use; without authorization, retain the manual fallback.
 
 When upgrading a workspace created with version `0.1.0`, run
 `refresh-metadata --workspace corpus` followed by

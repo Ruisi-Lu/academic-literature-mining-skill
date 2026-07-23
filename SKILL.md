@@ -1,6 +1,6 @@
 ---
 name: academic-literature-mining
-description: Mine, screen, download, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, and SQLite relational state. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, preserve authorized PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
+description: Mine, screen, acquire, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, and SQLite relational state. Includes explicit missing-token onboarding, opt-in paywalled-journal search with a resumable user-download handoff, and optional DOI-by-DOI Google Scholar library access through an authorized Chrome DevTools MCP session. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, guide scholarly API or browser setup, preserve authorized or explicitly user-supplied PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
 ---
 
 # Academic Literature Mining
@@ -35,8 +35,11 @@ safely.
   standalone preprint only when it is indispensable and no formal version can be
   verified; label it explicitly, record the sources and date checked, and never use
   it as the sole support for a key conclusion.
-- Download only an openly licensed or otherwise authorized full-text URL. Never
-  infer download permission from the ability to access a URL.
+- Automatically download only an openly licensed or otherwise authorized
+  full-text URL. Never infer download permission from the ability to access a
+  URL. Accept a paywalled PDF only through the explicit user-authorized workflow
+  after opt-in; never handle authentication secrets, scrape, or bypass access
+  controls for the user, and never label that PDF openly licensed.
 - Preserve the original PDF. For each page, extract only its embedded native text
   layer with PDFium and render the complete page to an image. Embed and rerank both
   as one `text_image` page; when no usable native text exists, fall back to the
@@ -59,11 +62,20 @@ safely.
 
 ## Install the skill
 
+Read [references/user-interaction.md](references/user-interaction.md) before any
+credential check, optional-feature decision, service startup, PDFium download,
+or manual/browser PDF request. This is mandatory: when a parameter is missing, name the
+official acquisition location, exact `.env` field, setup steps, and verification
+command. Never merely report a missing token and never ask the user to paste a
+secret into chat.
+
 Read [INSTALL.MD](INSTALL.MD) before running the workflow. Follow its portable
 subagent-manifest procedure instead of assuming a particular agent framework.
 
-Copy `.env.example` to `.env`, then set `NVIDIA_API_KEY`, `QDRANT_API_KEY`,
-`OPENALEX_API_KEY`, and `CONTACT_EMAIL` as applicable. Do not place secrets in a
+Before copying or editing configuration, check only whether required values are
+present; do not print their values. Guide the user to copy `.env.example` to
+`.env`, then set stage-required values. Ask whether optional Semantic Scholar
+enrichment is wanted before requesting its key. Do not place secrets in a
 subagent manifest or inherit the coordinator environment into search workers.
 
 Initialize the runtime:
@@ -80,6 +92,17 @@ cargo run --release --locked -- doctor
 ## Define the research run
 
 Copy `assets/research-plan.example.json` and edit it for the research question.
+Before editing any switch, ask the user whether to enable it. Treat silence as
+disabled; do not infer consent from an existing key. At minimum ask about
+`include_preprints`, `include_paywalled`,
+`use_google_scholar_library_access`, and optional Semantic Scholar enrichment.
+For `include_paywalled`, explain the lawful-access and external
+NVIDIA-processing conditions in
+[references/user-interaction.md](references/user-interaction.md) and require an
+explicit answer. Offer Google Scholar library access only after paywalled access
+is enabled; it remains off unless the user separately authorizes both browser
+attachment and any missing MCP installation.
+
 Specify:
 
 - the exact question and search concepts;
@@ -87,6 +110,11 @@ Specify:
 - publication window and accepted work types;
 - publication-status policy, with preprints excluded by default unless the plan
   explicitly permits indispensable, clearly labeled exceptions;
+- an `include_paywalled` value of `false` by default; set it to `true` only after
+  the user opts in to publisher/subscription searches and the manual PDF handoff;
+- a `use_google_scholar_library_access` value of `false` by default; enable it
+  only for an existing user-configured library affiliation and after reading
+  [references/chrome-library-access.md](references/chrome-library-access.md);
 - minimum quality score and corpus size;
 - a `min_relevance_score` of `0.0` for rank-only triage unless a nonzero cutoff
   has been calibrated on labeled examples for this exact screening query;
@@ -108,6 +136,7 @@ Do not invent a native filename or schema. Keep the following boundary:
 
 1. The coordinator shards source/query/page tasks.
 2. Budget workers search scholarly systems and return strict NDJSON candidates.
+   Pass the user-approved `include_paywalled` value on every worker task.
 3. Workers never download PDFs, call NVIDIA, access Qdrant, run a shell, or receive
    secrets.
 4. The coordinator imports results and independently resolves every persistent ID.
@@ -123,12 +152,17 @@ Reject malformed output rather than repairing unsupported claims manually.
 
 ## Run the mining workflow
 
-Run all built-in discovery and corpus stages:
+For open-access-only runs, run all built-in discovery and corpus stages:
 
 ```bash
 cargo run --release --locked -- \
   mine --plan assets/research-plan.example.json
 ```
+
+If `include_paywalled` is enabled, prefer controlled stages so the workflow can
+pause cleanly for the user. The `mine` command is still resumable and reports the
+same manual handoffs, but it cannot complete pending works until the user supplies
+their files.
 
 For controlled runs, execute the stages independently:
 
@@ -142,6 +176,47 @@ cargo run --release --locked -- ingest
 cargo run --release --locked -- audit
 cargo run --release --locked -- export
 ```
+
+## Hand off paywalled PDFs to the user
+
+Never download restricted content. After `download`, inspect its
+`manual_downloads` array. For every item, present the title and DOI, turn every
+`download_urls` entry into a clickable link, show the exact absolute
+`destination`, and explain why restricted access is required.
+
+If the plan also enables `use_google_scholar_library_access` and a request has a
+`google_scholar_query_url`, read
+[references/chrome-library-access.md](references/chrome-library-access.md) and
+try that bounded DOI-by-DOI browser handoff before asking the user to move the
+file. Use only an existing `chrome-devtools` MCP, or explain the official setup
+and obtain explicit authorization before installing it at user scope. Keep all
+Node/npm/MCP configuration outside this repository. Never bulk-query Scholar,
+inspect unrelated tabs, extract session secrets, handle login/2FA/CAPTCHA, or
+bypass a paywall. Fall back to the manual steps above whenever browser automation
+cannot proceed safely.
+
+Otherwise, tell the user to use their own lawful publisher or institutional
+access, save the correct PDF exactly at `destination`, and confirm when ready.
+Then pause; do not request credentials, cookies, tokens, or the PDF in chat.
+
+After the browser has saved the file successfully, or after the user confirms a
+manual placement, rerun:
+
+```bash
+cargo run --release --locked -- download --workspace corpus
+cargo run --release --locked -- render --workspace corpus
+cargo run --release --locked -- ingest --workspace corpus
+cargo run --release --locked -- audit --workspace corpus
+cargo run --release --locked -- export --workspace corpus
+```
+
+`download` validates and hashes the supplied regular PDF, records manual
+provenance, and changes the work from `awaiting-manual-download` to `downloaded`.
+Verify its title, authors, and DOI against `inspect-work` and the original PDF
+before continuing. Report remaining handoffs and failures. Record its license as
+`user-supplied; reuse rights not established`; lawful access is not permission to
+redistribute. Follow the complete pause/resume contract in
+[references/user-interaction.md](references/user-interaction.md).
 
 After upgrading an existing workspace that may contain DOI-backed arXiv
 preprints, run `refresh-metadata` and then rerun `screen` with the preserved
