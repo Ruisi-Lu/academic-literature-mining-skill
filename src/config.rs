@@ -15,6 +15,7 @@ pub struct Settings {
     pub rerank_url: String,
     pub openalex_api_key: String,
     pub semantic_scholar_api_key: String,
+    pub elsevier_api_key: String,
     pub contact_email: String,
     pub qdrant_url: String,
     pub qdrant_api_key: String,
@@ -54,6 +55,7 @@ impl Settings {
             ),
             openalex_api_key: variable("OPENALEX_API_KEY", ""),
             semantic_scholar_api_key: variable("SEMANTIC_SCHOLAR_API_KEY", ""),
+            elsevier_api_key: variable("ELSEVIER_API_KEY", ""),
             contact_email: variable("CONTACT_EMAIL", ""),
             qdrant_url: variable("QDRANT_URL", "http://localhost:6333")
                 .trim_end_matches('/')
@@ -109,6 +111,15 @@ impl Settings {
         if self.contact_email.trim().is_empty() || !self.contact_email.contains('@') {
             bail!(
                 "CONTACT_EMAIL is required for Crossref polite-pool requests: set CONTACT_EMAIL=<your-email> in the skill-root .env (or --env-file); no token is needed"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn require_elsevier(&self) -> Result<()> {
+        if placeholder(&self.elsevier_api_key) {
+            bail!(
+                "ELSEVIER_API_KEY is missing: sign in at https://dev.elsevier.com/, request an API key, and set ELSEVIER_API_KEY=<key> in projects/<slug>/.env (or the file passed with --env-file); never paste the key into chat or commit it. If you do not want ScienceDirect abstract enrichment, keep use_sciencedirect_abstracts=false"
             );
         }
         Ok(())

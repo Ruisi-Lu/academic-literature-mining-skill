@@ -38,6 +38,8 @@ pub struct ResearchPlan {
     pub include_paywalled: bool,
     #[serde(default)]
     pub use_google_scholar_library_access: bool,
+    #[serde(default)]
+    pub use_sciencedirect_abstracts: bool,
     #[serde(default = "default_target")]
     pub target_papers: usize,
     #[serde(default = "default_quality")]
@@ -856,6 +858,7 @@ mod tests {
         assert_eq!(plan.min_relevance_score, 0.0);
         assert!(!plan.include_paywalled);
         assert!(!plan.use_google_scholar_library_access);
+        assert!(!plan.use_sciencedirect_abstracts);
     }
 
     #[test]

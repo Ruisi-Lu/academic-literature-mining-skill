@@ -12,8 +12,8 @@ use tracing::{info, warn};
 use crate::citations::{CitationAudit, audit, export_library};
 use crate::config::Settings;
 use crate::discovery::{
-    DiscoveredWork, discover, lookup_arxiv, lookup_crossref, lookup_openalex,
-    lookup_openalex_by_doi,
+    DiscoveredWork, ScienceDirectClient, discover, is_sciencedirect_candidate, lookup_arxiv,
+    lookup_crossref, lookup_openalex, lookup_openalex_by_doi,
 };
 use crate::domain::{
     AgentCandidate, GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG, MANUAL_FULLTEXT_ENABLED_FLAG,
@@ -107,6 +107,60 @@ pub async fn refresh_formal_metadata(state: &State, settings: &Settings) -> Resu
     refresh_formal_metadata_with(state, &LiveFormalVersionResolver { settings }).await
 }
 
+trait ScienceDirectAbstractResolver {
+    async fn lookup_sciencedirect_abstract(&self, doi: &str) -> Result<Option<DiscoveredWork>>;
+}
+
+struct LiveScienceDirectAbstractResolver {
+    client: ScienceDirectClient,
+}
+
+impl ScienceDirectAbstractResolver for LiveScienceDirectAbstractResolver {
+    async fn lookup_sciencedirect_abstract(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+        self.client.lookup_abstract(doi).await
+    }
+}
+
+pub async fn refresh_sciencedirect_abstracts(state: &State, settings: &Settings) -> Result<usize> {
+    let resolver = LiveScienceDirectAbstractResolver {
+        client: ScienceDirectClient::new(settings)?,
+    };
+    refresh_sciencedirect_abstracts_with(state, &resolver).await
+}
+
+async fn refresh_sciencedirect_abstracts_with(
+    state: &State,
+    resolver: &impl ScienceDirectAbstractResolver,
+) -> Result<usize> {
+    let works = state.works_with_statuses(&["discovered", "rejected"])?;
+    let mut enriched = 0;
+    for (work_id, record) in works {
+        if !record.abstract_text.trim().is_empty() || !is_sciencedirect_candidate(&record) {
+            continue;
+        }
+        let Some(doi) = record.ids.get("doi").and_then(|value| normalize_doi(value)) else {
+            continue;
+        };
+        match resolver.lookup_sciencedirect_abstract(&doi).await? {
+            Some(enrichment) => {
+                let merged = record.merge(enrichment.record);
+                let destination_id = state.upsert_work(&merged, "discovered")?;
+                for raw in &enrichment.raw_records {
+                    state.store_raw(&destination_id, raw)?;
+                }
+                enriched += 1;
+            }
+            None => {
+                state.store_raw(
+                    &work_id,
+                    &resolution_failure("sciencedirect", &doi, "abstract_unavailable"),
+                )?;
+            }
+        }
+    }
+    Ok(enriched)
+}
+
 async fn refresh_formal_metadata_with(
     state: &State,
     resolver: &impl FormalVersionResolver,
@@ -165,12 +219,22 @@ async fn refresh_formal_metadata_with(
 
 pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> Result<usize> {
     state.preserve_research_plan(plan)?;
+    if plan.use_sciencedirect_abstracts {
+        settings.require_elsevier()?;
+    }
     let nvidia = NvidiaClient::new(settings)?;
     let promoted = refresh_formal_metadata(state, settings).await?;
     if promoted > 0 {
         info!(
             promoted,
             "promoted DOI-backed arXiv records before screening"
+        );
+    }
+    if plan.use_sciencedirect_abstracts {
+        let enriched = refresh_sciencedirect_abstracts(state, settings).await?;
+        info!(
+            enriched,
+            "enriched DOI-matched missing abstracts through ScienceDirect"
         );
     }
     let works = state.works_with_statuses(&["discovered", "rejected"])?;
@@ -959,6 +1023,66 @@ mod tests {
             self.calls.lock().unwrap().push(doi.to_owned());
             Ok(Some(self.crossref.clone()))
         }
+    }
+
+    struct FakeScienceDirectAbstractResolver {
+        enrichment: DiscoveredWork,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl ScienceDirectAbstractResolver for FakeScienceDirectAbstractResolver {
+        async fn lookup_sciencedirect_abstract(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+            self.calls.lock().unwrap().push(doi.to_owned());
+            Ok(Some(self.enrichment.clone()))
+        }
+    }
+
+    #[tokio::test]
+    async fn enriches_rejected_missing_abstracts_before_rescreening() {
+        let temporary = tempdir().unwrap();
+        let state = State::open(&temporary.path().join("corpus")).unwrap();
+
+        let mut record = WorkRecord::new("crossref", "10.1016/j.example.2026.1");
+        record
+            .ids
+            .insert("doi".into(), "10.1016/j.example.2026.1".into());
+        record.title = "A subscription article".into();
+        record.publisher = "Elsevier BV".into();
+        state.upsert_work(&record, "rejected").unwrap();
+
+        let mut abstract_record = WorkRecord::new("sciencedirect", "10.1016/j.example.2026.1");
+        abstract_record
+            .ids
+            .insert("doi".into(), "10.1016/j.example.2026.1".into());
+        abstract_record.abstract_text = "The DOI-matched publisher abstract.".into();
+        let resolver = FakeScienceDirectAbstractResolver {
+            enrichment: discovered(abstract_record, "sciencedirect", "10.1016/j.example.2026.1"),
+            calls: Mutex::new(Vec::new()),
+        };
+
+        let enriched = refresh_sciencedirect_abstracts_with(&state, &resolver)
+            .await
+            .unwrap();
+
+        assert_eq!(enriched, 1);
+        assert_eq!(
+            resolver.calls.lock().unwrap().as_slice(),
+            ["10.1016/j.example.2026.1"]
+        );
+        let works = state.all_works().unwrap();
+        assert_eq!(works.len(), 1);
+        assert_eq!(works[0].2, "discovered");
+        assert_eq!(
+            works[0].1.abstract_text,
+            "The DOI-matched publisher abstract."
+        );
+        assert!(
+            works[0]
+                .1
+                .provenance
+                .iter()
+                .any(|source| source.source == "sciencedirect")
+        );
     }
 
     #[tokio::test]

@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use chrono::{Datelike, NaiveDate, Utc};
 use quick_xml::de::from_str;
+use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,6 +25,63 @@ use crate::util::{
 pub struct DiscoveredWork {
     pub record: WorkRecord,
     pub raw_records: Vec<RawSourceRecord>,
+}
+
+pub const SCIENCEDIRECT_SOURCE: &str = "sciencedirect";
+
+pub struct ScienceDirectClient {
+    client: Client,
+}
+
+pub fn is_sciencedirect_candidate(record: &WorkRecord) -> bool {
+    let has_elsevier_doi = record
+        .ids
+        .get("doi")
+        .and_then(|value| normalize_doi(value))
+        .is_some_and(|doi| doi.starts_with("10.1016/"));
+    let publisher_is_elsevier = record.publisher.to_ascii_lowercase().contains("elsevier");
+    let has_sciencedirect_url = std::iter::once(record.url.as_str())
+        .chain(
+            record
+                .fulltext_candidates
+                .iter()
+                .map(|candidate| candidate.url.as_str()),
+        )
+        .any(is_sciencedirect_url);
+    has_elsevier_doi || publisher_is_elsevier || has_sciencedirect_url
+}
+
+impl ScienceDirectClient {
+    pub fn new(settings: &Settings) -> Result<Self> {
+        settings.require_elsevier()?;
+        Ok(Self {
+            client: sciencedirect_client(settings)?,
+        })
+    }
+
+    pub async fn lookup_abstract(&self, doi: &str) -> Result<Option<DiscoveredWork>> {
+        let doi = normalize_doi(doi).context("invalid DOI for ScienceDirect Article Retrieval")?;
+        let mut url = Url::parse("https://api.elsevier.com/content/article/doi/")?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("ScienceDirect base URL cannot contain path segments"))?
+            .push(&doi);
+        let params = [
+            ("view", "META_ABS".to_owned()),
+            ("httpAccept", "application/json".to_owned()),
+        ];
+        let response = retry_get(&self.client, url.as_str(), &params).await?;
+        match response.status() {
+            StatusCode::NOT_FOUND | StatusCode::FORBIDDEN => return Ok(None),
+            StatusCode::UNAUTHORIZED => {
+                bail!(
+                    "ScienceDirect Article Retrieval rejected ELSEVIER_API_KEY (HTTP 401): verify the key at https://dev.elsevier.com/ and update the project .env; never paste the key into chat or commit it"
+                );
+            }
+            _ => {}
+        }
+        let payload: Value = response.error_for_status()?.json().await?;
+        sciencedirect_discovered(payload, &doi)
+    }
 }
 
 pub async fn discover(
@@ -209,6 +267,87 @@ fn discovery_client(settings: &Settings) -> Result<Client> {
         ))
         .build()
         .map_err(Into::into)
+}
+
+fn sciencedirect_client(settings: &Settings) -> Result<Client> {
+    let mut headers = HeaderMap::new();
+    let mut api_key = HeaderValue::from_str(&settings.elsevier_api_key)
+        .context("ELSEVIER_API_KEY contains characters that cannot be sent in an HTTP header")?;
+    api_key.set_sensitive(true);
+    headers.insert(HeaderName::from_static("x-els-apikey"), api_key);
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    Client::builder()
+        .timeout(Duration::from_secs(settings.timeout_seconds))
+        .user_agent(format!(
+            "AcademicLiteratureMining/0.1 ({})",
+            if settings.contact_email.is_empty() {
+                "no-contact"
+            } else {
+                &settings.contact_email
+            }
+        ))
+        .default_headers(headers)
+        .build()
+        .map_err(Into::into)
+}
+
+fn sciencedirect_discovered(payload: Value, requested_doi: &str) -> Result<Option<DiscoveredWork>> {
+    let requested_doi =
+        normalize_doi(requested_doi).context("invalid requested ScienceDirect DOI")?;
+    let returned_doi = [
+        "/full-text-retrieval-response/coredata/prism:doi",
+        "/full-text-retrieval-response/coredata/dc:identifier",
+    ]
+    .into_iter()
+    .find_map(|pointer| sciencedirect_text(payload.pointer(pointer)))
+    .and_then(|value| normalize_doi(&value))
+    .context("ScienceDirect response did not contain a verifiable DOI")?;
+    if returned_doi != requested_doi {
+        bail!(
+            "ScienceDirect DOI mismatch: requested {requested_doi}, received {returned_doi}; refusing to merge the abstract"
+        );
+    }
+    let abstract_text = sciencedirect_text(
+        payload.pointer("/full-text-retrieval-response/coredata/dc:description"),
+    )
+    .map(|value| strip_markup(&value))
+    .unwrap_or_default();
+    if abstract_text.is_empty() {
+        return Ok(None);
+    }
+    let mut record = WorkRecord::new(SCIENCEDIRECT_SOURCE, &requested_doi);
+    record.ids.insert("doi".to_owned(), requested_doi.clone());
+    record.abstract_text = abstract_text;
+    Ok(Some(DiscoveredWork {
+        record,
+        raw_records: vec![RawSourceRecord {
+            source: SCIENCEDIRECT_SOURCE.to_owned(),
+            source_id: requested_doi,
+            retrieved_at: now(),
+            raw: payload,
+        }],
+    }))
+}
+
+fn sciencedirect_text(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    let text = match value {
+        Value::String(text) => text,
+        Value::Object(object) => object
+            .get("$")
+            .or_else(|| object.get("#text"))
+            .and_then(Value::as_str)?,
+        _ => return None,
+    };
+    let text = normalize_space(text);
+    (!text.is_empty()).then_some(text)
+}
+
+fn is_sciencedirect_url(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "sciencedirect.com" || host.ends_with(".sciencedirect.com"))
 }
 
 fn openalex_key_is_set(settings: &Settings) -> bool {
@@ -1154,6 +1293,77 @@ struct ArxivCategory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_sciencedirect_candidates_without_calling_other_publishers() {
+        let mut elsevier = WorkRecord::new("crossref", "10.1016/j.example.2026.1");
+        elsevier
+            .ids
+            .insert("doi".into(), "10.1016/j.example.2026.1".into());
+        assert!(is_sciencedirect_candidate(&elsevier));
+
+        let mut landing_page = WorkRecord::new("crossref", "10.9999/example");
+        landing_page.url =
+            "https://www.sciencedirect.com/science/article/pii/S0000000000000000".into();
+        assert!(is_sciencedirect_candidate(&landing_page));
+
+        let mut other = WorkRecord::new("crossref", "10.1000/example");
+        other.ids.insert("doi".into(), "10.1000/example".into());
+        other.publisher = "Other Publisher".into();
+        assert!(!is_sciencedirect_candidate(&other));
+    }
+
+    #[test]
+    fn parses_only_doi_matched_sciencedirect_abstracts() {
+        let payload = json!({
+            "full-text-retrieval-response": {
+                "coredata": {
+                    "prism:doi": "10.1016/J.EXAMPLE.2026.1",
+                    "dc:description": "<p>A complete <b>publisher abstract</b>.</p>"
+                }
+            }
+        });
+        let discovered =
+            sciencedirect_discovered(payload, "https://doi.org/10.1016/j.example.2026.1")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            discovered.record.abstract_text,
+            "A complete publisher abstract ."
+        );
+        assert_eq!(discovered.record.ids["doi"], "10.1016/j.example.2026.1");
+        assert_eq!(discovered.raw_records[0].source, SCIENCEDIRECT_SOURCE);
+    }
+
+    #[test]
+    fn rejects_mismatched_sciencedirect_responses() {
+        let payload = json!({
+            "full-text-retrieval-response": {
+                "coredata": {
+                    "dc:identifier": "doi:10.1016/j.different.2026.2",
+                    "dc:description": {"$": "A different article."}
+                }
+            }
+        });
+        let error = sciencedirect_discovered(payload, "10.1016/j.example.2026.1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("DOI mismatch"));
+    }
+
+    #[test]
+    fn treats_missing_sciencedirect_abstract_as_unavailable() {
+        let payload = json!({
+            "full-text-retrieval-response": {
+                "coredata": {"prism:doi": "10.1016/j.example.2026.1"}
+            }
+        });
+        assert!(
+            sciencedirect_discovered(payload, "10.1016/j.example.2026.1")
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn reconstructs_openalex_abstract() {
