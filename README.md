@@ -57,16 +57,17 @@ before a record can enter the corpus.
 
 ## Requirements
 
-- [Rust stable](https://www.rust-lang.org/tools/install) `1.97.1` or newer,
-  with Cargo, Clippy, and rustfmt
-- Docker with Docker Compose
+- Docker with Docker Compose for the prebuilt CLI and bundled Qdrant
+- Alternatively, [Rust stable](https://www.rust-lang.org/tools/install) `1.97.1`
+  or newer, with Cargo, Clippy, and rustfmt, for a native CLI build
 - An [NVIDIA Build](https://build.nvidia.com/) API key
 - An OpenAlex API key for OpenAlex discovery and OpenAlex-only identifier
   resolution
 - A contact email for polite Crossref requests
 
-`rust-toolchain.toml` follows the official stable channel. If Rust was installed
-through rustup, update it before building:
+`rust-toolchain.toml` follows the official stable channel. Rust is not required on
+the host when using the prebuilt image. For a native build installed through
+rustup, update it before building:
 
 ```bash
 rustup update stable
@@ -93,27 +94,33 @@ locally generated secret for the bundled self-hosted service, not a vendor-issue
 token. See [`references/user-interaction.md`](references/user-interaction.md) for
 stage-specific setup and safe secret handling.
 
-Build the CLI and start Qdrant:
+The recommended path pulls the exact published image version declared in
+`.env.example`; it does not use `latest`. Verify that the matching `vX.Y.Z`
+release exists under the canonical repository's GitHub Releases before pulling:
 
 ```bash
-cargo build --release --locked
+docker compose pull litmine
 docker compose up -d qdrant
+docker compose run --rm --no-deps litmine --version
 ```
 
-Validate the installation:
+Validate the container, its preinstalled PDFium cache, and Qdrant:
 
 ```bash
-cargo run --release --locked -- \
-  doctor --prepare-pdfium --check-qdrant
+docker compose run --rm litmine doctor --check-qdrant
 ```
 
 Run the example research plan:
 
 ```bash
-cargo run --release --locked -- \
-  mine --plan assets/research-plan.example.json \
-  --workspace corpus --max-candidates 1000
+docker compose run --rm litmine \
+  mine --plan /workspace/assets/research-plan.example.json \
+  --workspace /workspace/corpus --max-candidates 1000
 ```
+
+For native mode, run `cargo build --release --locked`, then follow
+[INSTALL.MD](INSTALL.MD) to authorize the one-time PDFium preparation and invoke
+`target/release/litmine` directly.
 
 ## Agent installation
 
@@ -340,6 +347,8 @@ manuscript.
 
 - Qdrant ports `6333` and `6334` are bound to `127.0.0.1`.
 - Qdrant requires an API key.
+- The CLI image runs without Linux capabilities, uses a read-only root filesystem
+  under Compose, and receives secrets only at runtime from `.env`.
 - Search subagents do not inherit coordinator environment variables.
 - Download redirects are checked and local/private-address targets are blocked.
 - Only openly licensed, open-access asserted, or recognized public-repository
@@ -359,6 +368,12 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --all-targets --locked
 cargo build --release --locked
 ```
+
+CI repeats those checks and builds the container on pull requests and `main`.
+Pushing an authorized `vX.Y.Z` tag publishes attested Linux `amd64`/`arm64`
+images and then creates the matching GitHub Release. See
+[`references/release-process.md`](references/release-process.md); do not create a
+tag or change package visibility without explicit repository-owner approval.
 
 The PDF text-image preparation test is ignored during ordinary offline test runs
 because it requires a prepared native PDFium library. `doctor --prepare-pdfium`

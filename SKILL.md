@@ -13,7 +13,12 @@ safely.
 ## Enforce the invariants
 
 - Use the Rust `litmine` CLI for the complete runtime. Keep PDF preparation in
-  Rust and PDFium; do not add OCR or an external PDF-to-text service.
+  Rust and PDFium; the CLI may be a release-pinned prebuilt image or a native
+  build. Do not add OCR or an external PDF-to-text service.
+- Keep an installed skill as a complete, non-shallow Git checkout of the canonical
+  repository. Never replace it with a source archive. Pair a checkout with only
+  the exact published container release declared by its `Cargo.toml`; never infer
+  compatibility from `latest`.
 - Enforce a strict read-only boundary for
   `~/Project/visual-encoding-vs-raw-iot-reasoning`: never create, edit, delete,
   rename, or move any file there. Read only
@@ -72,22 +77,35 @@ secret into chat.
 Read [INSTALL.MD](INSTALL.MD) before running the workflow. Follow its portable
 subagent-manifest procedure instead of assuming a particular agent framework.
 
+Ask whether to use the prebuilt Docker image or a native Rust build. When Docker
+Compose is available, recommend the image to avoid a host Rust compile and PDFium
+download. Read package version `X.Y.Z` from the checked-out `Cargo.toml`, verify
+that the complete clone contains tag `vX.Y.Z` and that the corresponding GitHub
+Release is published, set `LITMINE_VERSION=X.Y.Z`, and pull only
+`ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z`. Verify both
+`litmine --version` and the image's `org.opencontainers.image.version` label. If
+any check fails, explain it and use the native build; never fall back to an
+unverified or `latest` image. If Docker itself is absent, provide the official
+installation path and obtain authorization before changing the host.
+
 Before copying or editing configuration, check only whether required values are
 present; do not print their values. Guide the user to copy `.env.example` to
 `.env`, then set stage-required values. Ask whether optional Semantic Scholar
 enrichment is wanted before requesting its key. Do not place secrets in a
 subagent manifest or inherit the coordinator environment into search workers.
 
-Initialize the runtime:
+Initialize the prebuilt runtime:
 
 ```bash
 cp .env.example .env
 # Edit .env before continuing.
-rustup update stable
-cargo build --release --locked
-docker compose up -d
-cargo run --release --locked -- doctor
+docker compose pull litmine
+docker compose up -d qdrant
+docker compose run --rm litmine doctor --check-qdrant
 ```
+
+For native mode, follow [INSTALL.MD](INSTALL.MD), build with locked Cargo
+dependencies, ask before downloading PDFium, and run the same Rust CLI directly.
 
 ## Define the research run
 
@@ -158,6 +176,11 @@ For open-access-only runs, run all built-in discovery and corpus stages:
 cargo run --release --locked -- \
   mine --plan assets/research-plan.example.json
 ```
+
+In prebuilt-image mode, invoke the same subcommands through
+`docker compose run --rm litmine`, use `/workspace/...` paths, and keep the full
+checkout bind-mounted there. Do not run a host `cargo build` or request
+`--prepare-pdfium` in that mode.
 
 If `include_paywalled` is enabled, prefer controlled stages so the workflow can
 pause cleanly for the user. The `mine` command is still resumable and reports the
@@ -300,3 +323,7 @@ review; never use them for corpus discovery or semantic evidence retrieval.
 Read [references/api-contracts.md](references/api-contracts.md) before changing
 NVIDIA, Qdrant, Crossref, OpenAlex, arXiv, or Semantic Scholar integrations. Keep
 raw provider records in SQLite so later metadata corrections remain traceable.
+
+Read [references/release-process.md](references/release-process.md) before changing
+the container image, CI workflows, package version, tag, or GitHub Release. A
+runtime request never authorizes publishing or changing package visibility.

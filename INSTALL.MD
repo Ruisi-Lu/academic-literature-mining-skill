@@ -1,7 +1,8 @@
 # Install Academic Literature Mining Skill
 
-Install this skill as a Rust application and translate its neutral subagent contract into the
-manifest format supported by the local agent runtime.
+Install this skill with either its release-pinned prebuilt Rust image or a native Rust build, and
+translate its neutral subagent contract into the manifest format supported by the local agent
+runtime.
 
 ## 1. Acquire the canonical repository
 
@@ -19,17 +20,23 @@ determine:
 2. whether it accepts a Git repository URL directly;
 3. whether installed skill folder names must match the `name` in `SKILL.md`.
 
-If the runtime accepts Git URLs, install the canonical URL through that native mechanism. Otherwise,
-set `INSTALL_DIR` to the absolute native skill path discovered above. Use
+If the runtime accepts Git URLs and preserves a complete non-shallow `.git` directory, install the
+canonical URL through that native mechanism. A mechanism that downloads only an archive is not
+sufficient. Otherwise, set `INSTALL_DIR` to the absolute native skill path discovered above. Use
 `academic-literature-mining` as the folder name unless the runtime requires a different mapping:
 
 ```bash
 test -n "${INSTALL_DIR:?set INSTALL_DIR to the runtime's native skill path}"
-git clone --depth 1 \
+git clone \
   https://github.com/Ruisi-Lu/academic-literature-mining-skill.git \
   "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 ```
+
+The clone must contain complete history and tags so releases can be verified and updates remain
+fast-forwardable. Never use `--depth`, download only a source archive, or discard `.git`. If an
+existing canonical checkout is shallow, explain that the next command downloads its missing
+history, ask before the network operation, and repair it with `git fetch --unshallow --tags origin`.
 
 If `INSTALL_DIR` already exists, do not overwrite or delete it. Confirm that it is a clean Git
 checkout of the canonical repository before updating it:
@@ -37,13 +44,15 @@ checkout of the canonical repository before updating it:
 ```bash
 git -C "$INSTALL_DIR" remote get-url origin
 git -C "$INSTALL_DIR" status --short
+git -C "$INSTALL_DIR" fetch --tags --prune origin
 git -C "$INSTALL_DIR" pull --ff-only
+git -C "$INSTALL_DIR" rev-parse --is-shallow-repository
 ```
 
 Stop if the origin differs, the worktree is dirty, or a fast-forward update is impossible. After
-installation, record `git -C "$INSTALL_DIR" rev-parse HEAD` and verify that `SKILL.md`,
-`INSTALL.MD`, `Cargo.toml`, `rust-toolchain.toml`, and `agents/openai.yaml` exist at the repository
-root.
+installation, require `rev-parse --is-shallow-repository` to print `false`, record
+`git -C "$INSTALL_DIR" rev-parse HEAD`, and verify that `SKILL.md`, `INSTALL.MD`, `Cargo.toml`,
+`rust-toolchain.toml`, and `agents/openai.yaml` exist at the repository root.
 
 ## 2. Inspect the local agent runtime
 
@@ -102,21 +111,64 @@ cargo run --release --manifest-path Cargo.toml -- \
 The Rust coordinator resolves persistent identifiers against authoritative metadata, deduplicates
 records, and applies the quality gates. Invalid or unverifiable worker output is rejected.
 
-## 5. Build the Rust CLI
+## 5. Select and prepare the Rust CLI
 
-From this skill directory:
+Ask whether the user wants the prebuilt Docker image or a native Rust build. Recommend the image
+when Docker Compose is already available because it includes the release binary and PDFium. If
+Docker is missing, point to <https://docs.docker.com/engine/install/> (or the applicable official
+Docker Desktop instructions), explain the host-level changes, and install it only after explicit
+authorization. Native mode remains supported.
+
+Create the runtime environment file in either mode:
+
+```bash
+cp .env.example .env
+```
+
+### Prebuilt release image
+
+Never guess an image tag and never substitute `latest`. Read the package version `X.Y.Z` from the
+checked-out `Cargo.toml`; the only acceptable image for that checkout is
+`ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z`, backed by the published GitHub Release
+`vX.Y.Z`. Fetch tags, verify the exact tag exists in this complete clone, and verify the release is
+published and not a draft at:
+
+```text
+https://github.com/Ruisi-Lu/academic-literature-mining-skill/releases/tag/vX.Y.Z
+```
+
+Set `LITMINE_VERSION=X.Y.Z` in `.env`. Confirm that `LITMINE_IMAGE` remains the canonical GHCR
+path, explain the image download and disk impact, and then pull and verify the exact image:
+
+```bash
+git fetch --tags --prune origin
+git rev-parse --verify "refs/tags/vX.Y.Z^{commit}"
+docker compose pull litmine
+docker compose run --rm --no-deps litmine --version
+docker image inspect \
+  "ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'
+```
+
+Replace `X.Y.Z` before running commands; do not enter placeholders literally. The reported binary
+and OCI label must both match. The release workflow publishes Linux `amd64` and `arm64` images. If
+the release, tag, architecture, or public image is unavailable, report the exact failed check and
+use the native mode instead of silently pulling another tag. A registry login is appropriate only
+for a user who is legitimately authorized to access a private package.
+
+### Native release build
+
+From the skill directory:
 
 ```bash
 rustup update stable
 rustc --version
 cargo build --release --locked
-cp .env.example .env
 ```
 
-The project follows the official Rust stable channel through
-`rust-toolchain.toml` and requires Rust `1.97.1` or newer. If Rust is managed
-without rustup, install an equivalent current stable toolchain and run Cargo
-directly.
+The project follows the official Rust stable channel through `rust-toolchain.toml` and requires
+Rust `1.97.1` or newer. If Rust is managed without rustup, install an equivalent current stable
+toolchain and run Cargo directly.
 
 Read [`references/user-interaction.md`](references/user-interaction.md) and guide the user through
 every missing parameter. Do not ask them to paste a key into chat or expose secret values while
@@ -150,8 +202,15 @@ Do not expose ports 6333 or 6334 beyond localhost without TLS and network access
 
 ## 7. Validate the installation
 
-Explain that `--prepare-pdfium` downloads and caches a native PDFium library. Ask before enabling
-that switch, then validate NVIDIA configuration and Qdrant:
+The prebuilt image already contains PDFium. Validate its NVIDIA configuration, bundled PDFium, and
+Qdrant without a host Rust toolchain:
+
+```bash
+docker compose run --rm litmine doctor --check-qdrant
+```
+
+For native mode, explain that `--prepare-pdfium` downloads and caches a native PDFium library. Ask
+before enabling that switch, then validate NVIDIA configuration, Qdrant, and the Rust tests:
 
 ```bash
 cargo run --release --locked -- \
@@ -159,10 +218,11 @@ cargo run --release --locked -- \
 cargo test --locked
 ```
 
-`PDFIUM_AUTO_CACHE_DIR` defaults to a skill-local `.cache/pdfium` in `.env.example`. PDFium
-extracts each page's embedded native text and renders its complete page image. The pipeline
-combines both for model input, performs no OCR, and falls back to image-only for pages without a
-usable text layer.
+In native mode, `PDFIUM_AUTO_CACHE_DIR` defaults to a skill-local `.cache/pdfium`. In container
+mode, the release image supplies a read-only cache under `/opt/litmine/pdfium`. PDFium extracts
+each page's embedded native text and renders its complete page image. The pipeline combines both
+for model input, performs no OCR, and falls back to image-only for pages without a usable text
+layer.
 
 ## 8. Run a corpus
 
@@ -177,6 +237,15 @@ cargo run --release --locked -- \
   --workspace corpus --max-candidates 1000
 ```
 
+For the prebuilt image, run the equivalent command against the complete checkout mounted at
+`/workspace`:
+
+```bash
+docker compose run --rm litmine \
+  mine --plan /workspace/assets/research-plan.example.json \
+  --workspace /workspace/corpus --max-candidates 1000
+```
+
 For controlled or resumable execution, run `discover`, `screen`, `download`, `render`, `ingest`,
 and `export` separately. Inspect `target/release/litmine --help` for exact options.
 
@@ -185,7 +254,9 @@ destination path per pending PDF. If the separately approved Google Scholar opti
 follow [`references/chrome-library-access.md`](references/chrome-library-access.md); otherwise
 present the links and paths to the user and pause. After the file is placed, rerun `download` to
 validate, hash, and register it, then continue with `render`, `ingest`, `audit`, and `export`.
-Never automate restricted access or receive publisher credentials.
+Never automate restricted access or receive publisher credentials. Container handoffs report a
+path below `/workspace/corpus`; its host equivalent is the same relative path below
+`INSTALL_DIR/corpus`, which is bind-mounted read-write.
 
 Chrome DevTools MCP is a user-scope optional dependency, not a repository dependency. Do not add
 Node/npm, `.prototools`, Chrome settings, or an MCP manifest here. If `chrome-devtools` is absent,
@@ -203,3 +274,8 @@ for screening without discarding the authorized arXiv PDF or provenance.
 When upgrading a corpus produced by the older image-only pipeline, run
 `render --refresh-existing` followed by `ingest` once. The SQLite migration is automatic, while
 the explicit refresh avoids unexpectedly rerendering every indexed PDF during normal runs.
+
+For every later upgrade, require a clean worktree, fetch complete history and tags, and use
+`git pull --ff-only`. Then reread the new `Cargo.toml` version, verify its matching published
+`vX.Y.Z` release, update `LITMINE_VERSION` in `.env`, and pull that exact image. Never update the
+container independently of its complete Git checkout.

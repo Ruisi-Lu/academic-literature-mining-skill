@@ -3,6 +3,20 @@
 Read this file before inspecting credentials, creating a research plan, starting a local service,
 downloading PDFium, or asking the user to supply a PDF.
 
+## Choose an execution mode
+
+Ask whether the user wants the release-pinned prebuilt Docker image or a native Rust build. The
+image avoids a host Rust toolchain and already contains PDFium; native mode avoids downloading the
+CLI image. Treat no answer as a request for guidance only.
+
+For container mode, retain the complete canonical Git checkout and read version `X.Y.Z` from its
+`Cargo.toml`. Verify the clone's exact `vX.Y.Z` tag and published, non-draft GitHub Release, then
+set `LITMINE_VERSION=X.Y.Z` in `.env` and pull only
+`ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z`. Never choose `latest`, an unverified
+tag, or a release version different from the checkout. Explain the network and disk impact before
+pulling. If Docker is missing, give the applicable official Docker installation URL, explain the
+host-level changes, and install only after explicit authorization; otherwise offer native mode.
+
 ## Handle missing parameters
 
 Never stop at “missing token” or ask the user to paste a secret into chat. For every missing value:
@@ -25,19 +39,26 @@ When `--env-file` is used, apply the same rules to that file.
 | `QDRANT_API_KEY` | Bundled local Qdrant and all `ingest` or `query` operations | No vendor token is issued for the bundled self-hosted service. Have the user generate a strong secret, for example with `openssl rand -hex 32`, and set `QDRANT_API_KEY=<secret>` in `.env`; Docker Compose and `litmine` read the same value. For Qdrant Cloud, direct the user to the cluster’s Database API Keys page instead. |
 | `SEMANTIC_SCHOLAR_API_KEY` | Optional Semantic Scholar enrichment only | Ask whether to enable this enrichment. If yes, request a key at <https://www.semanticscholar.org/product/api#api-key-form>, wait for the emailed key, and set `SEMANTIC_SCHOLAR_API_KEY=<key>` in `.env`. If no, leave it empty. |
 
-After setup, run:
+After container setup, run:
+
+```bash
+docker compose run --rm litmine doctor --check-qdrant
+```
+
+After native setup, run:
 
 ```bash
 cargo run --release --locked -- doctor --check-qdrant
 ```
 
-On first use, explain that `--prepare-pdfium` downloads and caches a native PDFium library, ask
-before enabling it, and then run:
+On first native use, explain that `--prepare-pdfium` downloads and caches a native PDFium library,
+ask before enabling it, and then run:
 
 ```bash
 cargo run --release --locked -- doctor --prepare-pdfium --check-qdrant
 ```
 
+The prebuilt image already contains a read-only PDFium cache; do not run `--prepare-pdfium` for it.
 Explain that `docker compose up -d qdrant` starts a localhost-bound persistent service before
 running it. If Docker, Rust, an agent manifest, institutional authentication, or any other manual
 prerequisite is unavailable, give the exact next action and wait instead of claiming success.
