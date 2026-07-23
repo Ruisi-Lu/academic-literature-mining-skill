@@ -31,6 +31,12 @@ pub async fn discover(
     settings: &Settings,
     max_candidates: usize,
 ) -> Result<Vec<DiscoveredWork>> {
+    if plan.sources.iter().any(|source| source == "openalex") {
+        require_openalex_key(settings)?;
+    }
+    if plan.sources.iter().any(|source| source == "crossref") {
+        settings.require_contact_email()?;
+    }
     let client = discovery_client(settings)?;
     let per_search = (max_candidates / plan.queries.len().max(1) / plan.sources.len().max(1))
         .max(25)
@@ -41,17 +47,7 @@ pub async fn discover(
     for source in &plan.sources {
         for query in &plan.queries {
             let result = match source.as_str() {
-                "openalex" => {
-                    if !openalex_key_is_set(settings) {
-                        warn!("OPENALEX_API_KEY is not set; skipping OpenAlex");
-                        failures.push(format!(
-                            "openalex:{query}: OPENALEX_API_KEY is not configured"
-                        ));
-                        Ok(Vec::new())
-                    } else {
-                        search_openalex(&client, settings, plan, query, per_search).await
-                    }
-                }
+                "openalex" => search_openalex(&client, settings, plan, query, per_search).await,
                 "crossref" => search_crossref(&client, settings, plan, query, per_search).await,
                 "arxiv" => search_arxiv(&client, plan, query, per_search).await,
                 unsupported => bail!("unsupported source {unsupported}"),
@@ -91,6 +87,7 @@ pub async fn discover(
 }
 
 pub async fn lookup_crossref(settings: &Settings, doi: &str) -> Result<Option<DiscoveredWork>> {
+    settings.require_contact_email()?;
     let client = discovery_client(settings)?;
     let mut url = Url::parse("https://api.crossref.org/works/")?;
     url.path_segments_mut()
@@ -221,7 +218,9 @@ fn openalex_key_is_set(settings: &Settings) -> bool {
 
 fn require_openalex_key(settings: &Settings) -> Result<()> {
     if !openalex_key_is_set(settings) {
-        bail!("OPENALEX_API_KEY is required to resolve an OpenAlex-only candidate");
+        bail!(
+            "OPENALEX_API_KEY is required when OpenAlex is enabled: create an account and copy the key from https://openalex.org/settings/api, then set OPENALEX_API_KEY=<key> in the skill-root .env (or --env-file); never paste the key into chat or commit it"
+        );
     }
     Ok(())
 }

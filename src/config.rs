@@ -75,7 +75,9 @@ impl Settings {
 
     pub fn require_nvidia(&self) -> Result<()> {
         if placeholder(&self.nvidia_api_key) {
-            bail!("set a real NVIDIA_API_KEY from build.nvidia.com in .env");
+            bail!(
+                "NVIDIA_API_KEY is missing: sign in at https://build.nvidia.com/settings/api-keys, generate a key, and set NVIDIA_API_KEY=<key> in the skill-root .env (or --env-file); never paste the key into chat or commit it"
+            );
         }
         if self.embed_model != EMBED_MODEL {
             bail!("NEMOTRON_EMBED_MODEL_ID must be {EMBED_MODEL}");
@@ -90,8 +92,24 @@ impl Settings {
         if self.qdrant_url.is_empty() {
             bail!("QDRANT_URL is required");
         }
-        if self.qdrant_url.contains("localhost") && placeholder(&self.qdrant_api_key) {
-            bail!("set the same non-placeholder QDRANT_API_KEY in .env and Docker Compose");
+        if placeholder(&self.qdrant_api_key) {
+            if self.qdrant_url.contains("localhost") || self.qdrant_url.contains("127.0.0.1") {
+                bail!(
+                    "QDRANT_API_KEY is missing: generate a strong local secret (for example, openssl rand -hex 32), set QDRANT_API_KEY=<secret> in the skill-root .env (or --env-file), and let docker-compose.yml read that same value"
+                );
+            }
+            bail!(
+                "QDRANT_API_KEY is missing: for Qdrant Cloud, create a Database API key from the cluster's API Keys page (https://qdrant.tech/documentation/cloud/authentication/) and set QDRANT_API_KEY=<key> in the skill-root .env (or --env-file); for another secured deployment, obtain the key from its operator; never paste it into chat or commit it"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn require_contact_email(&self) -> Result<()> {
+        if self.contact_email.trim().is_empty() || !self.contact_email.contains('@') {
+            bail!(
+                "CONTACT_EMAIL is required for Crossref polite-pool requests: set CONTACT_EMAIL=<your-email> in the skill-root .env (or --env-file); no token is needed"
+            );
         }
         Ok(())
     }
