@@ -53,7 +53,8 @@ pages as indexed.
 
 ## Scholarly sources
 
-- OpenAlex: require `OPENALEX_API_KEY`; use cursor paging and retain raw work objects.
+- OpenAlex: require `OPENALEX_API_KEY`; obtain it from <https://openalex.org/settings/api>, use
+  cursor paging, and retain raw work objects.
 - Crossref: use the polite pool by supplying `CONTACT_EMAIL`; use it as the authoritative DOI
   citation enrichment source.
 - arXiv: respect the API delay and treat repository PDFs as authorized submitted versions.
@@ -62,6 +63,10 @@ pages as indexed.
 Never treat a Crossref TDM link alone as proof of open access. Authorize downloads only from an
 open-access metadata assertion, an open license, or a recognized public repository. Never use
 Sci-Hub, bypass access controls, or scrape paywalled full text.
+
+When the user explicitly enables paywalled searching, return public DOI and publisher landing
+URLs only. The user must authenticate and download through lawful access, save the PDF at the
+coordinator-provided path, and confirm completion. Do not receive or automate their credentials.
 
 ## Authoritative documentation
 

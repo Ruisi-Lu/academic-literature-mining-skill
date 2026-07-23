@@ -16,13 +16,16 @@ The coordinator must:
 4. run retraction and scholarly-type exclusions;
 5. calculate academic-value signals;
 6. use Nemotron Rerank for research-question relevance;
-7. download only independently authorized open-access PDFs;
+7. download only independently authorized open-access PDFs automatically, or accept a
+   user-supplied PDF through the explicit manual handoff when the research plan opted in;
 8. export and audit citations.
 
 ## Task partitioning
 
 Keep a worker task bounded to one query, one source set, and preferably one date range. Use stable
 task IDs such as `q03-openalex-2020-2023`. Avoid assigning the entire review to one cheap model.
+Set `include_paywalled` explicitly on every task from the user-approved research plan. It controls
+whether the worker deliberately searches subscription journals; it never grants download access.
 
 Good partitions include:
 

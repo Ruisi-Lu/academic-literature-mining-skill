@@ -15,8 +15,14 @@ use crate::discovery::{
     DiscoveredWork, discover, lookup_arxiv, lookup_crossref, lookup_openalex,
     lookup_openalex_by_doi,
 };
-use crate::domain::{AgentCandidate, RawSourceRecord, ResearchPlan};
-use crate::download::{client as download_client, download_work};
+use crate::domain::{
+    AgentCandidate, MANUAL_FULLTEXT_ENABLED_FLAG, REQUIRES_MANUAL_PDF_FLAG, RawSourceRecord,
+    ResearchPlan,
+};
+use crate::download::{
+    DownloadedPdf, ManualDownloadRequest, USER_SUPPLIED_LICENSE, client as download_client,
+    download_work, import_manual_pdf, manual_download_request, pdf_destination,
+};
 use crate::nvidia::{NvidiaClient, PageModelInput};
 use crate::qdrant::{QdrantClient, SearchResult};
 use crate::quality::{add_relevance, assess};
@@ -36,6 +42,24 @@ pub struct ArtifactIssue {
     pub work_id: String,
     pub status: String,
     pub issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DownloadFailure {
+    pub work_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct DownloadReport {
+    pub downloaded: usize,
+    pub manual_downloads: Vec<ManualDownloadRequest>,
+    pub failures: Vec<DownloadFailure>,
+}
+
+enum DownloadOutcome {
+    Downloaded(DownloadedPdf),
+    AwaitingManual(ManualDownloadRequest),
 }
 
 pub async fn discover_into_state(
@@ -153,6 +177,14 @@ pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> 
     let mut assessments = Vec::with_capacity(works.len());
     let mut relevance_scores = Vec::new();
     for (work_id, mut record) in works {
+        let requires_manual_pdf = plan.include_paywalled && !record.has_authorized_fulltext();
+        record.flags.insert(
+            MANUAL_FULLTEXT_ENABLED_FLAG.to_owned(),
+            plan.include_paywalled,
+        );
+        record
+            .flags
+            .insert(REQUIRES_MANUAL_PDF_FLAG.to_owned(), requires_manual_pdf);
         record.quality = assess(&record, plan);
         assessments.push((work_id, record));
     }
@@ -244,6 +276,15 @@ async fn enrich_selected(state: &State, settings: &Settings) -> Result<usize> {
         match lookup_crossref(settings, &doi).await {
             Ok(Some(enrichment)) => {
                 let mut merged = record.merge(enrichment.record);
+                let manual_enabled = merged
+                    .flags
+                    .get(MANUAL_FULLTEXT_ENABLED_FLAG)
+                    .copied()
+                    .unwrap_or(false);
+                let requires_manual_pdf = manual_enabled && !merged.has_authorized_fulltext();
+                merged
+                    .flags
+                    .insert(REQUIRES_MANUAL_PDF_FLAG.to_owned(), requires_manual_pdf);
                 let status = if merged.flags.get("is_retracted").copied().unwrap_or(false) {
                     merged.quality.accepted = false;
                     merged.quality.rejection_reasons.push(
@@ -266,8 +307,13 @@ async fn enrich_selected(state: &State, settings: &Settings) -> Result<usize> {
     Ok(disqualified)
 }
 
-pub async fn download_selected(state: &State, settings: &Settings) -> Result<usize> {
-    let works = state.works_with_statuses(&["selected", "error:download"])?;
+pub async fn download_selected(state: &State, settings: &Settings) -> Result<DownloadReport> {
+    let works = state.works_with_statuses(&[
+        "selected",
+        "awaiting-manual-download",
+        "error:download",
+        "error:manual-download",
+    ])?;
     let client = download_client(settings)?;
     let workspace = state.workspace.clone();
     let settings = settings.clone();
@@ -276,24 +322,99 @@ pub async fn download_selected(state: &State, settings: &Settings) -> Result<usi
         let workspace = workspace.clone();
         let settings = settings.clone();
         async move {
-            let result = download_work(&client, &settings, &workspace, &work_id, &record).await;
+            let manual_enabled = record
+                .flags
+                .get(MANUAL_FULLTEXT_ENABLED_FLAG)
+                .copied()
+                .unwrap_or(false);
+            let requires_manual_pdf = record
+                .flags
+                .get(REQUIRES_MANUAL_PDF_FLAG)
+                .copied()
+                .unwrap_or(false);
+            let manual_path = pdf_destination(&workspace, &work_id);
+            let result = if manual_enabled && manual_path.is_file() {
+                import_manual_pdf(
+                    &workspace,
+                    &work_id,
+                    &record,
+                    settings.max_pdf_bytes,
+                )
+                .map(DownloadOutcome::Downloaded)
+                .with_context(|| {
+                    format!(
+                        "validate user-supplied PDF at {}; replace it with the correct PDF and retry",
+                        manual_path.display()
+                    )
+                })
+            } else if requires_manual_pdf {
+                Ok(DownloadOutcome::AwaitingManual(manual_download_request(
+                    &workspace,
+                    &work_id,
+                    &record,
+                    "no independently authorized open-access PDF was found",
+                )))
+            } else {
+                match download_work(&client, &settings, &workspace, &work_id, &record).await {
+                    Ok(downloaded) => Ok(DownloadOutcome::Downloaded(downloaded)),
+                    Err(error) if manual_enabled => {
+                        Ok(DownloadOutcome::AwaitingManual(manual_download_request(
+                            &workspace,
+                            &work_id,
+                            &record,
+                            format!("automatic authorized download failed: {error:#}"),
+                        )))
+                    }
+                    Err(error) => Err(error),
+                }
+            };
             (work_id, result)
         }
     }))
     .buffer_unordered(settings.download_workers)
     .collect::<Vec<_>>()
     .await;
-    let mut downloaded = 0;
+    let mut report = DownloadReport::default();
     for (work_id, result) in results {
         match result {
-            Ok(pdf) => {
+            Ok(DownloadOutcome::Downloaded(pdf)) => {
                 state.mark_downloaded(&work_id, &pdf.url, &pdf.path, &pdf.sha256, &pdf.license)?;
-                downloaded += 1;
+                if pdf.user_supplied {
+                    state.store_raw(
+                        &work_id,
+                        &RawSourceRecord {
+                            source: "manual-pdf".to_owned(),
+                            source_id: pdf.sha256.clone(),
+                            retrieved_at: now(),
+                            raw: json!({
+                                "acquisition": "user-supplied",
+                                "source_url": pdf.url,
+                                "path": pdf.path,
+                                "sha256": pdf.sha256,
+                                "reuse_license_asserted": false
+                            }),
+                        },
+                    )?;
+                }
+                report.downloaded += 1;
             }
-            Err(error) => state.mark_error(&work_id, "download", &format!("{error:#}"))?,
+            Ok(DownloadOutcome::AwaitingManual(request)) => {
+                state.mark_awaiting_manual_download(&work_id)?;
+                report.manual_downloads.push(request);
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                let stage = if pdf_destination(&state.workspace, &work_id).exists() {
+                    "manual-download"
+                } else {
+                    "download"
+                };
+                state.mark_error(&work_id, stage, &error)?;
+                report.failures.push(DownloadFailure { work_id, error });
+            }
         }
     }
-    Ok(downloaded)
+    Ok(report)
 }
 
 pub fn render_downloaded(
@@ -379,7 +500,14 @@ pub fn export(state: &State) -> Result<CorpusAudit> {
         .all_works()?
         .into_iter()
         .filter(|(_, _, status)| {
-            ["selected", "downloaded", "rendered", "indexed"].contains(&status.as_str())
+            [
+                "selected",
+                "awaiting-manual-download",
+                "downloaded",
+                "rendered",
+                "indexed",
+            ]
+            .contains(&status.as_str())
         })
         .map(|(id, record, _)| (id, record))
         .collect::<Vec<_>>();
@@ -462,11 +590,19 @@ fn build_corpus_audit(state: &State, citation: CitationAudit) -> Result<CorpusAu
             }
             if artifact.pdf_license.is_empty() {
                 issues.push("PDF has no explicit reuse-license metadata".to_owned());
+            } else if artifact.pdf_license == USER_SUPPLIED_LICENSE {
+                issues.push(
+                    "user-supplied PDF has no established reuse license; do not redistribute it"
+                        .to_owned(),
+                );
             }
         }
         match artifact.status.as_str() {
             "discovered" => issues.push("candidate has not been screened".to_owned()),
             "selected" => issues.push("selected work has not been downloaded".to_owned()),
+            "awaiting-manual-download" => {
+                issues.push("waiting for the user to supply a lawfully accessed PDF".to_owned())
+            }
             "downloaded" => issues.push("downloaded PDF has not been rendered".to_owned()),
             "rendered" => issues.push("rendered pages have not all been indexed".to_owned()),
             "indexed" => {
@@ -730,8 +866,13 @@ pub async fn run_all(
     info!(discovered, "discovery complete");
     let selected = screen(state, settings, plan).await?;
     info!(selected, "screening complete");
-    let downloaded = download_selected(state, settings).await?;
-    info!(downloaded, "downloads complete");
+    let download_report = download_selected(state, settings).await?;
+    info!(
+        downloaded = download_report.downloaded,
+        awaiting_manual = download_report.manual_downloads.len(),
+        failed = download_report.failures.len(),
+        "download stage complete"
+    );
     let rendered = render_downloaded(state, settings, false)?;
     info!(rendered, "multimodal PDF page preparation complete");
     let indexed_pages = ingest_pages(state, settings).await?;
@@ -740,7 +881,9 @@ pub async fn run_all(
     Ok(json!({
         "discovered": discovered,
         "selected": selected,
-        "downloaded": downloaded,
+        "downloaded": download_report.downloaded,
+        "manual_downloads": download_report.manual_downloads,
+        "download_failures": download_report.failures,
         "rendered_papers": rendered,
         "indexed_pages": indexed_pages,
         "corpus_audit": audit,
@@ -978,5 +1121,45 @@ mod tests {
         assert!(message.contains("configured threshold=0.350000"));
         assert!(message.contains("min_relevance_score to 0.0"));
         assert!(message.contains("labeled positives and negatives"));
+    }
+
+    #[tokio::test]
+    async fn queues_and_resumes_a_user_supplied_pdf() {
+        let temporary = tempdir().unwrap();
+        let state = State::open(&temporary.path().join("corpus")).unwrap();
+        let mut record = WorkRecord::new("crossref", "10.1000/manual");
+        record.ids.insert("doi".into(), "10.1000/manual".into());
+        record.title = "A subscription article".into();
+        record.url = "https://publisher.example/article".into();
+        record
+            .flags
+            .insert(MANUAL_FULLTEXT_ENABLED_FLAG.into(), true);
+        record.flags.insert(REQUIRES_MANUAL_PDF_FLAG.into(), true);
+        let work_id = state.upsert_work(&record, "selected").unwrap();
+        let settings = Settings::load(None).unwrap();
+
+        let waiting = download_selected(&state, &settings).await.unwrap();
+
+        assert_eq!(waiting.downloaded, 0);
+        assert_eq!(waiting.manual_downloads.len(), 1);
+        assert!(waiting.failures.is_empty());
+        assert_eq!(state.all_works().unwrap()[0].2, "awaiting-manual-download");
+
+        let destination = pdf_destination(&state.workspace, &work_id);
+        fs::write(&destination, b"%PDF-1.7\nmanual pipeline test").unwrap();
+        let resumed = download_selected(&state, &settings).await.unwrap();
+
+        assert_eq!(resumed.downloaded, 1);
+        assert!(resumed.manual_downloads.is_empty());
+        assert!(resumed.failures.is_empty());
+        let details = state.inspect_work(&work_id).unwrap().unwrap();
+        assert_eq!(details.summary.status, "downloaded");
+        assert_eq!(details.pdf_artifact.unwrap().license, USER_SUPPLIED_LICENSE);
+        assert!(
+            details
+                .provenance_records
+                .iter()
+                .any(|source| source.source == "manual-pdf")
+        );
     }
 }

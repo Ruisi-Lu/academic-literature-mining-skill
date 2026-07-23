@@ -9,6 +9,7 @@
     "research_question",
     "query",
     "sources",
+    "include_paywalled",
     "max_candidates"
   ],
   "properties": {
@@ -56,6 +57,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "include_paywalled": {
+      "type": "boolean",
+      "description": "Whether the worker should deliberately include subscription/paywalled journal records. This never authorizes PDF access or download."
     },
     "seed_ids": {
       "type": "array",

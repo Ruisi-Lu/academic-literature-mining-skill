@@ -19,9 +19,14 @@ Follow these rules:
 7. Do not decide that a paper is non-retracted, peer reviewed, open access, or high quality unless
    reporting raw evidence. The coordinator verifies those properties.
 8. Do not download PDFs, call NVIDIA, write Qdrant, use secrets, or modify the repository.
-9. Emit one compact JSON object per line and no prose. Conform exactly to
+9. Read `include_paywalled` from the task. When it is false, do not add deliberate
+   subscription-only publisher searches beyond ordinary scholarly-index results. When it is true,
+   search paid journals too, but inspect only public metadata and landing pages; return official
+   DOI/publisher links and never authenticate, download restricted content, scrape a paywall, or
+   bypass access controls.
+10. Emit one compact JSON object per line and no prose. Conform exactly to
    `subagent-result.schema.json`.
-10. Deduplicate candidates within the task by normalized DOI, then arXiv ID, then OpenAlex ID.
-11. Stop at the task's `max_candidates`.
-12. Set `source` to the scholarly system or publisher/repository record that verified the
+11. Deduplicate candidates within the task by normalized DOI, then arXiv ID, then OpenAlex ID.
+12. Stop at the task's `max_candidates`.
+13. Set `source` to the scholarly system or publisher/repository record that verified the
     identifier. Preserve every verification page in `evidence_urls`.

@@ -1,3 +1,5 @@
+use std::fs;
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -6,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use reqwest::redirect::{Attempt, Policy};
 use reqwest::{Client, StatusCode};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::time::sleep;
@@ -14,7 +17,11 @@ use url::Url;
 
 use crate::config::Settings;
 use crate::domain::{FullTextCandidate, WorkRecord};
-use crate::util::{safe_slug, sha256_bytes};
+use crate::util::{
+    normalize_arxiv, normalize_doi, normalize_openalex, safe_slug, sha256_bytes, sha256_file,
+};
+
+pub const USER_SUPPLIED_LICENSE: &str = "user-supplied; reuse rights not established";
 
 #[derive(Clone, Debug)]
 pub struct DownloadedPdf {
@@ -22,6 +29,18 @@ pub struct DownloadedPdf {
     pub path: PathBuf,
     pub sha256: String,
     pub license: String,
+    pub user_supplied: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ManualDownloadRequest {
+    pub work_id: String,
+    pub title: String,
+    pub doi: Option<String>,
+    pub download_urls: Vec<String>,
+    pub destination: String,
+    pub reason: String,
+    pub instructions: String,
 }
 
 pub fn client(settings: &Settings) -> Result<Client> {
@@ -72,6 +91,70 @@ pub async fn download_work(
     )
 }
 
+pub fn manual_download_request(
+    workspace: &Path,
+    work_id: &str,
+    record: &WorkRecord,
+    reason: impl Into<String>,
+) -> ManualDownloadRequest {
+    ManualDownloadRequest {
+        work_id: work_id.to_owned(),
+        title: record.title.clone(),
+        doi: record.ids.get("doi").and_then(|value| normalize_doi(value)),
+        download_urls: manual_download_urls(record),
+        destination: pdf_destination(workspace, work_id)
+            .to_string_lossy()
+            .into_owned(),
+        reason: reason.into(),
+        instructions: "Use only lawful publisher or institutional access. Download the PDF yourself, save it at destination exactly, do not bypass access controls, and tell the agent when the file is ready. The agent must rerun `litmine download`, then `render`, `ingest`, and `audit`. User-supplied access does not establish a reuse license."
+            .to_owned(),
+    }
+}
+
+pub fn import_manual_pdf(
+    workspace: &Path,
+    work_id: &str,
+    record: &WorkRecord,
+    max_pdf_bytes: u64,
+) -> Result<DownloadedPdf> {
+    let path = pdf_destination(workspace, work_id);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspect user-supplied PDF {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        bail!("user-supplied PDF must be a regular file, not a symbolic link");
+    }
+    if !metadata.is_file() {
+        bail!("user-supplied PDF path is not a regular file");
+    }
+    if metadata.len() == 0 {
+        bail!("user-supplied PDF is empty");
+    }
+    if metadata.len() > max_pdf_bytes {
+        bail!(
+            "user-supplied PDF is {} bytes, exceeding the configured maximum of {max_pdf_bytes}",
+            metadata.len()
+        );
+    }
+    let mut input = fs::File::open(&path)?;
+    let mut prefix = vec![0_u8; 1024];
+    let read = input.read(&mut prefix)?;
+    prefix.truncate(read);
+    if !prefix.windows(5).any(|window| window == b"%PDF-") {
+        bail!("user-supplied file is not a PDF (missing %PDF- signature)");
+    }
+    let url = manual_download_urls(record)
+        .into_iter()
+        .next()
+        .context("selected work has no publisher, DOI, repository, or full-text URL")?;
+    Ok(DownloadedPdf {
+        url,
+        sha256: sha256_file(&path)?,
+        path,
+        license: USER_SUPPLIED_LICENSE.to_owned(),
+        user_supplied: true,
+    })
+}
+
 async fn download_candidate(
     client: &Client,
     settings: &Settings,
@@ -81,11 +164,7 @@ async fn download_candidate(
 ) -> Result<DownloadedPdf> {
     let url = Url::parse(&candidate.url).context("invalid PDF URL")?;
     safe_remote_url(&url)?;
-    let short_hash = &sha256_bytes(work_id.as_bytes())[..12];
-    let stem = safe_slug(work_id, "paper");
-    let final_path = workspace
-        .join("pdfs")
-        .join(format!("{stem}-{short_hash}.pdf"));
+    let final_path = pdf_destination(workspace, work_id);
     let temporary_path = final_path.with_extension("pdf.part");
     let _ = tokio::fs::remove_file(&temporary_path).await;
     let mut delay = 1;
@@ -119,6 +198,7 @@ async fn download_candidate(
                     path: final_path,
                     sha256,
                     license: candidate.license.clone(),
+                    user_supplied: false,
                 });
             }
             Ok(response)
@@ -138,6 +218,52 @@ async fn download_candidate(
         delay = (delay * 2).min(20);
     }
     bail!("PDF download exhausted retries")
+}
+
+pub fn pdf_destination(workspace: &Path, work_id: &str) -> PathBuf {
+    let short_hash = &sha256_bytes(work_id.as_bytes())[..12];
+    let stem = safe_slug(work_id, "paper");
+    workspace
+        .join("pdfs")
+        .join(format!("{stem}-{short_hash}.pdf"))
+}
+
+fn manual_download_urls(record: &WorkRecord) -> Vec<String> {
+    let mut urls = Vec::new();
+    for candidate in &record.fulltext_candidates {
+        push_public_url(&mut urls, &candidate.url);
+    }
+    push_public_url(&mut urls, &record.url);
+    if let Some(doi) = record.ids.get("doi").and_then(|value| normalize_doi(value)) {
+        push_public_url(&mut urls, &format!("https://doi.org/{doi}"));
+    }
+    if let Some(openalex) = record
+        .ids
+        .get("openalex")
+        .and_then(|value| normalize_openalex(value))
+    {
+        push_public_url(&mut urls, &format!("https://openalex.org/{openalex}"));
+    }
+    if let Some(arxiv) = record
+        .ids
+        .get("arxiv")
+        .and_then(|value| normalize_arxiv(value))
+    {
+        push_public_url(&mut urls, &format!("https://arxiv.org/abs/{arxiv}"));
+    }
+    urls
+}
+
+fn push_public_url(urls: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if value.is_empty() || urls.iter().any(|existing| existing == value) {
+        return;
+    }
+    if let Ok(url) = Url::parse(value)
+        && safe_remote_url(&url).is_ok()
+    {
+        urls.push(value.to_owned());
+    }
 }
 
 async fn stream_pdf(response: reqwest::Response, path: &Path, max_bytes: u64) -> Result<String> {
@@ -196,10 +322,55 @@ fn safe_remote_url(url: &Url) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn blocks_local_download_targets() {
         assert!(safe_remote_url(&Url::parse("http://127.0.0.1/paper.pdf").unwrap()).is_err());
         assert!(safe_remote_url(&Url::parse("https://arxiv.org/paper.pdf").unwrap()).is_ok());
+    }
+
+    #[test]
+    fn builds_a_stable_manual_download_handoff() {
+        let temporary = tempdir().unwrap();
+        let mut record = WorkRecord::new("crossref", "10.1000/manual");
+        record.ids.insert("doi".into(), "10.1000/manual".into());
+        record.title = "A subscription article".into();
+        record.url = "https://publisher.example/article".into();
+
+        let request = manual_download_request(
+            temporary.path(),
+            "doi:10.1000/manual",
+            &record,
+            "manual access required",
+        );
+
+        assert_eq!(request.doi.as_deref(), Some("10.1000/manual"));
+        assert!(
+            request
+                .download_urls
+                .contains(&"https://publisher.example/article".to_owned())
+        );
+        assert!(request.destination.ends_with(".pdf"));
+        assert!(request.instructions.contains("rerun `litmine download`"));
+    }
+
+    #[test]
+    fn validates_and_hashes_a_user_supplied_pdf() {
+        let temporary = tempdir().unwrap();
+        fs::create_dir_all(temporary.path().join("pdfs")).unwrap();
+        let mut record = WorkRecord::new("crossref", "10.1000/manual");
+        record.ids.insert("doi".into(), "10.1000/manual".into());
+        let work_id = "doi:10.1000/manual";
+        let path = pdf_destination(temporary.path(), work_id);
+        fs::write(&path, b"%PDF-1.7\nmanual test").unwrap();
+
+        let artifact = import_manual_pdf(temporary.path(), work_id, &record, 1024 * 1024).unwrap();
+
+        assert!(artifact.user_supplied);
+        assert_eq!(artifact.path, path);
+        assert_eq!(artifact.license, USER_SUPPLIED_LICENSE);
+        assert!(!artifact.sha256.is_empty());
+        assert_eq!(artifact.url, "https://doi.org/10.1000/manual");
     }
 }

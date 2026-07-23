@@ -58,7 +58,7 @@ enum Command {
         #[arg(long)]
         plan: PathBuf,
     },
-    /// Download independently authorized PDFs for selected works.
+    /// Download authorized PDFs or emit resumable manual-download requests.
     Download {
         #[arg(long, default_value = "corpus")]
         workspace: PathBuf,
@@ -197,8 +197,13 @@ pub async fn run() -> Result<()> {
         }
         Command::Download { workspace } => {
             let state = State::open(&workspace)?;
-            let count = pipeline::download_selected(&state, &settings).await?;
-            json!({"downloaded": count, "status": state.summary()?})
+            let report = pipeline::download_selected(&state, &settings).await?;
+            json!({
+                "downloaded": report.downloaded,
+                "manual_downloads": report.manual_downloads,
+                "download_failures": report.failures,
+                "status": state.summary()?
+            })
         }
         Command::Render {
             workspace,

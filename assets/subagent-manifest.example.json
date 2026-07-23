@@ -1,5 +1,5 @@
 {
-  "contract_version": "1.0",
+  "contract_version": "1.1",
   "portable_only": true,
   "instruction": "Translate this contract into the local agent runtime's native subagent manifest. Do not install this JSON verbatim unless the runtime explicitly supports this schema.",
   "roles": [

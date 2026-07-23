@@ -13,6 +13,8 @@ use crate::util::{
 };
 
 pub const SCHEMA_VERSION: &str = "1.0";
+pub const MANUAL_FULLTEXT_ENABLED_FLAG: &str = "manual_fulltext_enabled";
+pub const REQUIRES_MANUAL_PDF_FLAG: &str = "requires_manual_pdf";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -31,6 +33,8 @@ pub struct ResearchPlan {
     pub sources: Vec<String>,
     #[serde(default)]
     pub include_preprints: bool,
+    #[serde(default)]
+    pub include_paywalled: bool,
     #[serde(default = "default_target")]
     pub target_papers: usize,
     #[serde(default = "default_quality")]
@@ -318,6 +322,12 @@ impl WorkRecord {
             self.container_title,
             self.abstract_text
         )
+    }
+
+    pub fn has_authorized_fulltext(&self) -> bool {
+        self.fulltext_candidates
+            .iter()
+            .any(|candidate| candidate.authorized)
     }
 
     pub(crate) fn is_verified_formal_publication(&self) -> bool {
@@ -822,5 +832,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(plan.min_relevance_score, 0.0);
+        assert!(!plan.include_paywalled);
     }
 }

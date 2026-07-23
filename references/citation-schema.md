@@ -13,7 +13,7 @@ Preserve these fields without fabrication:
 - `work_type`;
 - `container_title`, publisher, volume, issue, page range, and article number;
 - language, keywords, subjects, ISSN, and ISBN;
-- canonical URL and authorized full-text candidates;
+- canonical URL, authorized full-text candidates, and restricted publisher/DOI handoff URLs;
 - citation metrics;
 - retraction and paratext flags;
 - quality signals, thresholds, rejection reasons, and screening timestamp;
@@ -45,6 +45,11 @@ Attach these values to every multimodal page point:
 - publication year and authorized PDF URL.
 
 This duplication intentionally keeps every retrieved page independently citable.
+
+For a user-supplied paywalled PDF, add a `manual-pdf` source record with its source URL, exact local
+path, checksum, acquisition type, and `reuse_license_asserted: false`. Store the PDF license value
+as `user-supplied; reuse rights not established`; never convert lawful access into an open-license
+claim.
 
 ## Local exports
 

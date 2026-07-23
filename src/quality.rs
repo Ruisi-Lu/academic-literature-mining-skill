@@ -174,13 +174,12 @@ pub fn assess(record: &WorkRecord, plan: &ResearchPlan) -> QualityAssessment {
         signals.push("evidence-synthesis:+7".to_owned());
     }
 
-    let authorized_pdf = record
-        .fulltext_candidates
-        .iter()
-        .any(|candidate| candidate.authorized);
+    let authorized_pdf = record.has_authorized_fulltext();
     if authorized_pdf {
         score += 5.0;
         signals.push("authorized-fulltext:+5".to_owned());
+    } else if plan.include_paywalled {
+        signals.push("manual-fulltext-required:+0".to_owned());
     } else {
         rejection_reasons.push("no authorized open-access PDF candidate".to_owned());
     }
@@ -246,6 +245,7 @@ mod tests {
             languages: vec![],
             sources: vec!["crossref".into()],
             include_preprints: false,
+            include_paywalled: false,
             target_papers: 10,
             min_quality_score: 40.0,
             min_relevance_score: 0.2,
@@ -278,5 +278,42 @@ mod tests {
         assert_eq!(ranked.relevance_logit, Some(-3.5));
         assert_eq!(ranked.relevance_score, 0.029312);
         assert!(!ranked.accepted);
+    }
+
+    #[test]
+    fn paywalled_fulltext_requires_explicit_plan_opt_in() {
+        let mut record = WorkRecord::new("crossref", "10.1000/paywalled");
+        record.ids.insert("doi".into(), "10.1000/paywalled".into());
+        record.title = "A credible subscription article".into();
+        record.abstract_text = "A complete screening abstract.".into();
+        record.authors.push(Author {
+            family: "Researcher".into(),
+            ..Author::default()
+        });
+        record.issued.date_parts = vec![vec![2024]];
+        record.work_type = "article-journal".into();
+        record.container_title = "Journal of Tests".into();
+
+        let mut closed_plan = plan();
+        closed_plan.min_quality_score = 0.0;
+        let rejected = assess(&record, &closed_plan);
+        assert!(!rejected.accepted);
+        assert!(
+            rejected
+                .rejection_reasons
+                .iter()
+                .any(|reason| reason.contains("no authorized open-access PDF"))
+        );
+
+        let mut opted_in_plan = closed_plan;
+        opted_in_plan.include_paywalled = true;
+        let accepted = assess(&record, &opted_in_plan);
+        assert!(accepted.accepted);
+        assert!(
+            accepted
+                .signals
+                .iter()
+                .any(|signal| signal == "manual-fulltext-required:+0")
+        );
     }
 }

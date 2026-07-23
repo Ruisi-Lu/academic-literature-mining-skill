@@ -191,7 +191,9 @@ impl State {
             ON CONFLICT(work_id) DO UPDATE SET
                 canonical_json=excluded.canonical_json,
                 status=CASE
-                    WHEN works.status IN ('downloaded', 'rendered', 'indexed')
+                    WHEN works.status IN (
+                        'awaiting-manual-download', 'downloaded', 'rendered', 'indexed'
+                    )
                     THEN works.status ELSE excluded.status END,
                 quality_score=excluded.quality_score,
                 relevance_score=excluded.relevance_score,
@@ -570,6 +572,14 @@ impl State {
             WHERE work_id=?1
             "#,
             params![work_id, url, path.to_string_lossy(), sha256, license, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_awaiting_manual_download(&self, work_id: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE works SET status='awaiting-manual-download', last_error=NULL, updated_at=?2 WHERE work_id=?1",
+            params![work_id, now()],
         )?;
         Ok(())
     }

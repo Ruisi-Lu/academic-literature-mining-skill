@@ -40,7 +40,8 @@ Reject a work when any of these conditions applies:
 - the research plan excludes its document type or preprint status;
 - it is a preprint that is not explicitly allowed as an indispensable exception by the research
   plan;
-- no independently authorized open-access PDF is available;
+- no independently authorized open-access PDF is available and the research plan did not
+  explicitly enable the manual paywalled-PDF workflow;
 - its Nemotron relevance score is below the research plan threshold.
 
 Never override a retraction because citation counts or model relevance are high.
@@ -57,6 +58,11 @@ Calculate a 0–100 academic-value score from multiple evidence classes:
 - influential citations when Semantic Scholar enrichment is available;
 - evidence-synthesis markers such as systematic review and meta-analysis;
 - authorized full-text availability.
+
+When `include_paywalled` is enabled, absence of authorized open full text does not add the five
+full-text points and records `manual-fulltext-required:+0`. It is an access workflow exception,
+not evidence of quality, permission, or an open license. Do not rerank or inspect the full text
+until the user supplies the correct PDF through the designated path.
 
 Assign tiers:
 
