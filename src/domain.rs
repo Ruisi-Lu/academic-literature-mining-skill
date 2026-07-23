@@ -15,6 +15,7 @@ use crate::util::{
 pub const SCHEMA_VERSION: &str = "1.0";
 pub const MANUAL_FULLTEXT_ENABLED_FLAG: &str = "manual_fulltext_enabled";
 pub const REQUIRES_MANUAL_PDF_FLAG: &str = "requires_manual_pdf";
+pub const GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG: &str = "google_scholar_library_access";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +36,8 @@ pub struct ResearchPlan {
     pub include_preprints: bool,
     #[serde(default)]
     pub include_paywalled: bool,
+    #[serde(default)]
+    pub use_google_scholar_library_access: bool,
     #[serde(default = "default_target")]
     pub target_papers: usize,
     #[serde(default = "default_quality")]
@@ -92,6 +95,11 @@ impl ResearchPlan {
         }
         if !(0.0..=1.0).contains(&self.min_relevance_score) {
             bail!("min_relevance_score must be between 0 and 1");
+        }
+        if self.use_google_scholar_library_access && !self.include_paywalled {
+            bail!(
+                "use_google_scholar_library_access requires include_paywalled=true and explicit user opt-in"
+            );
         }
         Ok(())
     }
@@ -833,5 +841,19 @@ mod tests {
         .unwrap();
         assert_eq!(plan.min_relevance_score, 0.0);
         assert!(!plan.include_paywalled);
+        assert!(!plan.use_google_scholar_library_access);
+    }
+
+    #[test]
+    fn browser_library_access_requires_paywalled_opt_in() {
+        let plan = serde_json::from_value::<ResearchPlan>(serde_json::json!({
+            "research_question": "question",
+            "queries": ["query"],
+            "date_from": null,
+            "date_to": null,
+            "use_google_scholar_library_access": true
+        }))
+        .unwrap();
+        assert!(plan.validate().is_err());
     }
 }

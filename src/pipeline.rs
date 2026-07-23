@@ -16,8 +16,8 @@ use crate::discovery::{
     lookup_openalex_by_doi,
 };
 use crate::domain::{
-    AgentCandidate, MANUAL_FULLTEXT_ENABLED_FLAG, REQUIRES_MANUAL_PDF_FLAG, RawSourceRecord,
-    ResearchPlan,
+    AgentCandidate, GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG, MANUAL_FULLTEXT_ENABLED_FLAG,
+    REQUIRES_MANUAL_PDF_FLAG, RawSourceRecord, ResearchPlan,
 };
 use crate::download::{
     DownloadedPdf, ManualDownloadRequest, USER_SUPPLIED_LICENSE, client as download_client,
@@ -185,6 +185,10 @@ pub async fn screen(state: &State, settings: &Settings, plan: &ResearchPlan) -> 
         record
             .flags
             .insert(REQUIRES_MANUAL_PDF_FLAG.to_owned(), requires_manual_pdf);
+        record.flags.insert(
+            GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG.to_owned(),
+            plan.use_google_scholar_library_access,
+        );
         record.quality = assess(&record, plan);
         assessments.push((work_id, record));
     }

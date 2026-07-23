@@ -246,6 +246,7 @@ mod tests {
             sources: vec!["crossref".into()],
             include_preprints: false,
             include_paywalled: false,
+            use_google_scholar_library_access: false,
             target_papers: 10,
             min_quality_score: 40.0,
             min_relevance_score: 0.2,

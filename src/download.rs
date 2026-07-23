@@ -16,7 +16,7 @@ use tracing::warn;
 use url::Url;
 
 use crate::config::Settings;
-use crate::domain::{FullTextCandidate, WorkRecord};
+use crate::domain::{FullTextCandidate, GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG, WorkRecord};
 use crate::util::{
     normalize_arxiv, normalize_doi, normalize_openalex, safe_slug, sha256_bytes, sha256_file,
 };
@@ -38,6 +38,8 @@ pub struct ManualDownloadRequest {
     pub title: String,
     pub doi: Option<String>,
     pub download_urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google_scholar_query_url: Option<String>,
     pub destination: String,
     pub reason: String,
     pub instructions: String,
@@ -102,6 +104,7 @@ pub fn manual_download_request(
         title: record.title.clone(),
         doi: record.ids.get("doi").and_then(|value| normalize_doi(value)),
         download_urls: manual_download_urls(record),
+        google_scholar_query_url: google_scholar_query_url(record),
         destination: pdf_destination(workspace, work_id)
             .to_string_lossy()
             .into_owned(),
@@ -254,6 +257,24 @@ fn manual_download_urls(record: &WorkRecord) -> Vec<String> {
     urls
 }
 
+fn google_scholar_query_url(record: &WorkRecord) -> Option<String> {
+    if !record
+        .flags
+        .get(GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG)
+        .copied()
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let doi = record
+        .ids
+        .get("doi")
+        .and_then(|value| normalize_doi(value))?;
+    let mut url = Url::parse("https://scholar.google.com/scholar").ok()?;
+    url.query_pairs_mut().append_pair("q", &doi);
+    Some(url.into())
+}
+
 fn push_public_url(urls: &mut Vec<String>, value: &str) {
     let value = value.trim();
     if value.is_empty() || urls.iter().any(|existing| existing == value) {
@@ -337,6 +358,9 @@ mod tests {
         record.ids.insert("doi".into(), "10.1000/manual".into());
         record.title = "A subscription article".into();
         record.url = "https://publisher.example/article".into();
+        record
+            .flags
+            .insert(GOOGLE_SCHOLAR_LIBRARY_ACCESS_FLAG.into(), true);
 
         let request = manual_download_request(
             temporary.path(),
@@ -352,6 +376,12 @@ mod tests {
                 .contains(&"https://publisher.example/article".to_owned())
         );
         assert!(request.destination.ends_with(".pdf"));
+        assert!(
+            request
+                .google_scholar_query_url
+                .as_deref()
+                .is_some_and(|url| url.contains("10.1000%2Fmanual"))
+        );
         assert!(request.instructions.contains("rerun `litmine download`"));
     }
 
