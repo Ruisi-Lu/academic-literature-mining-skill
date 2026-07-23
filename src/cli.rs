@@ -88,6 +88,8 @@ enum Command {
     /// Retrieve PDF pages from Qdrant and rerank their text-image evidence.
     Query {
         query: String,
+        #[arg(long, default_value = "corpus")]
+        workspace: PathBuf,
         #[arg(long, default_value_t = 10)]
         top_k: usize,
         #[arg(long, default_value_t = 50)]
@@ -150,7 +152,11 @@ pub async fn run() -> Result<()> {
     let output = match cli.command {
         Command::Init { workspace } => {
             let state = State::open(&workspace)?;
-            json!({"workspace": state.workspace, "status": state.summary()?})
+            json!({
+                "workspace": state.workspace,
+                "corpus_id": state.corpus_id(),
+                "status": state.summary()?
+            })
         }
         Command::Doctor {
             prepare_pdfium,
@@ -229,10 +235,14 @@ pub async fn run() -> Result<()> {
         }
         Command::Query {
             query,
+            workspace,
             top_k,
             candidate_limit,
         } => {
-            serde_json::to_value(pipeline::query(&settings, &query, top_k, candidate_limit).await?)?
+            let state = State::open_existing(&workspace)?;
+            serde_json::to_value(
+                pipeline::query(&state, &settings, &query, top_k, candidate_limit).await?,
+            )?
         }
         Command::Catalog {
             workspace,

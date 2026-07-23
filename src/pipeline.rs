@@ -452,7 +452,7 @@ pub fn render_downloaded(
 
 pub async fn ingest_pages(state: &mut State, settings: &Settings) -> Result<usize> {
     let nvidia = NvidiaClient::new(settings)?;
-    let qdrant = QdrantClient::new(settings)?;
+    let qdrant = QdrantClient::for_corpus(settings, state.corpus_id())?;
     qdrant.ensure_collection().await?;
     let pages = state.pages_for_indexing()?;
     let mut indexed = 0;
@@ -486,6 +486,7 @@ pub async fn ingest_pages(state: &mut State, settings: &Settings) -> Result<usiz
 }
 
 pub async fn query(
+    state: &State,
     settings: &Settings,
     query: &str,
     top_k: usize,
@@ -495,7 +496,7 @@ pub async fn query(
         anyhow::bail!("top_k and candidate_limit must be positive");
     }
     let nvidia = NvidiaClient::new(settings)?;
-    let qdrant = QdrantClient::new(settings)?;
+    let qdrant = QdrantClient::for_corpus(settings, state.corpus_id())?;
     qdrant.search(&nvidia, query, top_k, candidate_limit).await
 }
 

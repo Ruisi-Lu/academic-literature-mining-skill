@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::domain::{PageRecord, PdfArtifact, RawSourceRecord, ResearchPlan, WorkRecord};
 use crate::util::{atomic_json, now, sha256_bytes};
@@ -11,6 +12,7 @@ use crate::util::{atomic_json, now, sha256_bytes};
 pub struct State {
     connection: Connection,
     pub workspace: PathBuf,
+    corpus_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -153,12 +155,19 @@ impl State {
                 finished_at TEXT,
                 details_json TEXT NOT NULL DEFAULT '{}'
             );
+
+            CREATE TABLE IF NOT EXISTS workspace_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             "#,
         )?;
         ensure_page_text_column(&connection)?;
+        let corpus_id = ensure_corpus_identity(&connection)?;
         Ok(Self {
             connection,
             workspace,
+            corpus_id,
         })
     }
 
@@ -173,10 +182,22 @@ impl State {
             );
         }
         let connection = Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let corpus_id = read_corpus_identity(&connection).with_context(|| {
+            format!(
+                "workspace {} has no usable corpus identity; run `litmine init --workspace {}` once to migrate it before querying",
+                workspace.display(),
+                workspace.display()
+            )
+        })?;
         Ok(Self {
             connection,
             workspace,
+            corpus_id,
         })
+    }
+
+    pub fn corpus_id(&self) -> &str {
+        &self.corpus_id
     }
 
     pub fn upsert_work(&self, record: &WorkRecord, status: &str) -> Result<String> {
@@ -802,6 +823,62 @@ fn ensure_page_text_column(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn ensure_corpus_identity(connection: &Connection) -> Result<String> {
+    if let Some(corpus_id) = connection
+        .query_row(
+            "SELECT value FROM workspace_meta WHERE key='corpus_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    {
+        validate_corpus_identity(&corpus_id)?;
+        return Ok(corpus_id);
+    }
+
+    let corpus_id = Uuid::new_v4().to_string();
+    connection.execute(
+        "INSERT INTO workspace_meta (key, value) VALUES ('corpus_id', ?1)",
+        [&corpus_id],
+    )?;
+    connection.execute(
+        "UPDATE pages SET indexed_at=NULL WHERE indexed_at IS NOT NULL",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE works SET status='rendered', updated_at=?1 WHERE status='indexed'",
+        [now()],
+    )?;
+    Ok(corpus_id)
+}
+
+fn read_corpus_identity(connection: &Connection) -> Result<String> {
+    let has_metadata_table = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_meta')",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !has_metadata_table {
+        anyhow::bail!("workspace_meta table is missing");
+    }
+    let corpus_id = connection
+        .query_row(
+            "SELECT value FROM workspace_meta WHERE key='corpus_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .context("corpus_id is missing from workspace_meta")?;
+    validate_corpus_identity(&corpus_id)?;
+    Ok(corpus_id)
+}
+
+fn validate_corpus_identity(corpus_id: &str) -> Result<()> {
+    Uuid::parse_str(corpus_id)
+        .with_context(|| format!("invalid corpus_id in workspace metadata: {corpus_id}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -969,5 +1046,55 @@ mod tests {
         let missing = temporary.path().join("missing-corpus");
         assert!(State::open_existing(&missing).is_err());
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn assigns_distinct_persistent_identities_to_workspaces() {
+        let temporary = tempdir().unwrap();
+        let first_path = temporary.path().join("first");
+        let second_path = temporary.path().join("second");
+        let first_id = State::open(&first_path).unwrap().corpus_id().to_owned();
+        let second_id = State::open(&second_path).unwrap().corpus_id().to_owned();
+
+        assert_ne!(first_id, second_id);
+        assert_eq!(
+            State::open_existing(&first_path).unwrap().corpus_id(),
+            first_id
+        );
+    }
+
+    #[test]
+    fn corpus_identity_migration_queues_legacy_pages_for_reindexing() {
+        let temporary = tempdir().unwrap();
+        let workspace = temporary.path().join("corpus");
+        let mut state = State::open(&workspace).unwrap();
+        let mut record = WorkRecord::new("crossref", "10.1000/legacy");
+        record.ids.insert("doi".into(), "10.1000/legacy".into());
+        let work_id = state.upsert_work(&record, "rendered").unwrap();
+        let page = PageRecord {
+            page_id: "legacy-page".into(),
+            work_id: work_id.clone(),
+            page_number: 1,
+            image_path: workspace.join("pages/legacy.jpg").display().to_string(),
+            image_sha256: "sha256".into(),
+            page_text: "legacy text".into(),
+            width: 100,
+            height: 200,
+            indexed_at: None,
+        };
+        state
+            .replace_pages(&work_id, std::slice::from_ref(&page))
+            .unwrap();
+        state.mark_pages_indexed(&[page]).unwrap();
+        state
+            .connection
+            .execute("DELETE FROM workspace_meta WHERE key='corpus_id'", [])
+            .unwrap();
+        drop(state);
+
+        let migrated = State::open(&workspace).unwrap();
+        assert_eq!(migrated.pages_for_indexing().unwrap().len(), 1);
+        assert_eq!(migrated.summary().unwrap(), vec![("rendered".into(), 1)]);
+        Uuid::parse_str(migrated.corpus_id()).unwrap();
     }
 }

@@ -59,7 +59,7 @@ impl Settings {
                 .trim_end_matches('/')
                 .to_owned(),
             qdrant_api_key: variable("QDRANT_API_KEY", ""),
-            qdrant_collection: variable("QDRANT_COLLECTION", "academic_literature_v1"),
+            qdrant_collection: variable("QDRANT_COLLECTION", "academic_literature_v2"),
             vector_size: numeric("QDRANT_VECTOR_SIZE", 2048)?,
             timeout_seconds: numeric("HTTP_TIMEOUT_SECONDS", 60)?,
             download_workers: numeric("DOWNLOAD_WORKERS", 4)?,

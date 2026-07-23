@@ -6,20 +6,25 @@ use reqwest::{Client, StatusCode};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::citations::csl_json;
 use crate::config::Settings;
 use crate::domain::{PageRecord, PdfArtifact, WorkRecord};
 use crate::nvidia::{NvidiaClient, PageModelInput};
 
+const POINT_NAMESPACE: Uuid = Uuid::from_u128(0x5a82_7355_c4df_4ec0_b52c_4a20_1d81_731b);
+
 #[derive(Clone)]
 pub struct QdrantClient {
     client: Client,
     settings: Settings,
+    corpus_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SearchResult {
+    pub corpus_id: String,
     pub page_id: String,
     pub work_id: String,
     pub page_number: u32,
@@ -41,7 +46,16 @@ impl QdrantClient {
                 .timeout(Duration::from_secs(settings.timeout_seconds))
                 .build()?,
             settings: settings.clone(),
+            corpus_id: None,
         })
+    }
+
+    pub fn for_corpus(settings: &Settings, corpus_id: &str) -> Result<Self> {
+        Uuid::parse_str(corpus_id)
+            .with_context(|| format!("invalid workspace corpus_id: {corpus_id}"))?;
+        let mut client = Self::new(settings)?;
+        client.corpus_id = Some(corpus_id.to_owned());
+        Ok(client)
     }
 
     pub async fn ensure_collection(&self) -> Result<()> {
@@ -93,6 +107,7 @@ impl QdrantClient {
         if pages.len() != vectors.len() {
             bail!("page/vector count mismatch");
         }
+        let corpus_id = self.corpus_id()?;
         if pages.iter().any(|(_, _, artifact)| {
             artifact.path.is_empty() || artifact.sha256.is_empty() || artifact.url.is_empty()
         }) {
@@ -102,35 +117,14 @@ impl QdrantClient {
             .iter()
             .zip(vectors)
             .map(|((page, record, artifact), vector)| {
-                let citation_key = record.identity().replace([':', '/'], "-");
-                let embedding_modality = if page.page_text.trim().is_empty() {
-                    "image"
-                } else {
-                    "text_image"
-                };
-                json!({
-                    "id": page.page_id,
-                    "vector": {"content": vector},
-                    "payload": {
-                        "schema_version": record.schema_version,
-                        "record_type": "pdf_page",
-                        "work_id": page.work_id,
-                        "page_number": page.page_number,
-                        "image_path": page.image_path,
-                        "image_sha256": page.image_sha256,
-                        "page_text": page.page_text,
-                        "embedding_model": self.settings.embed_model,
-                        "embedding_modality": embedding_modality,
-                        "citation": csl_json(record, &citation_key),
-                        "publication_year": record.year(),
-                        "canonical_record": record,
-                        "quality": record.quality,
-                        "pdf_url": artifact.url,
-                        "pdf_path": artifact.path,
-                        "pdf_sha256": artifact.sha256,
-                        "pdf_license": artifact.license
-                    }
-                })
+                page_point(
+                    corpus_id,
+                    &self.settings.embed_model,
+                    page,
+                    record,
+                    artifact,
+                    vector,
+                )
             })
             .collect::<Vec<_>>();
         let url = format!(
@@ -152,6 +146,7 @@ impl QdrantClient {
         top_k: usize,
         candidate_limit: usize,
     ) -> Result<Vec<SearchResult>> {
+        let corpus_id = self.corpus_id()?;
         let vector = nvidia.embed_query(query).await?;
         let url = format!(
             "{}/collections/{}/points/query",
@@ -159,13 +154,7 @@ impl QdrantClient {
         );
         let response = self
             .request(self.client.post(url))
-            .json(&json!({
-                "query": vector,
-                "using": "content",
-                "limit": candidate_limit.max(top_k),
-                "with_payload": true,
-                "with_vector": false
-            }))
+            .json(&search_request(corpus_id, vector, top_k, candidate_limit))
             .send()
             .await?
             .error_for_status()?;
@@ -191,7 +180,8 @@ impl QdrantClient {
             .into_iter()
             .zip(scores)
             .map(|(point, rerank_score)| SearchResult {
-                page_id: point.get("id").map(value_as_string).unwrap_or_default(),
+                corpus_id: text(&point, "/payload/corpus_id"),
+                page_id: text(&point, "/payload/page_id"),
                 work_id: text(&point, "/payload/work_id"),
                 page_number: point
                     .pointer("/payload/page_number")
@@ -223,6 +213,7 @@ impl QdrantClient {
 
     async fn create_indices(&self) -> Result<()> {
         for (field_name, field_schema) in [
+            ("corpus_id", json!("keyword")),
             ("work_id", json!("keyword")),
             ("record_type", json!("keyword")),
             ("citation.DOI", json!("keyword")),
@@ -265,6 +256,82 @@ impl QdrantClient {
             bail!("Qdrant request failed ({status}): {body}")
         }
     }
+
+    fn corpus_id(&self) -> Result<&str> {
+        self.corpus_id
+            .as_deref()
+            .context("Qdrant corpus operation requires a workspace corpus_id")
+    }
+}
+
+fn page_point(
+    corpus_id: &str,
+    embed_model: &str,
+    page: &PageRecord,
+    record: &WorkRecord,
+    artifact: &PdfArtifact,
+    vector: &[f32],
+) -> Value {
+    let citation_key = record.identity().replace([':', '/'], "-");
+    let embedding_modality = if page.page_text.trim().is_empty() {
+        "image"
+    } else {
+        "text_image"
+    };
+    json!({
+        "id": scoped_page_id(corpus_id, &page.page_id),
+        "vector": {"content": vector},
+        "payload": {
+            "schema_version": record.schema_version,
+            "record_type": "pdf_page",
+            "corpus_id": corpus_id,
+            "page_id": page.page_id,
+            "work_id": page.work_id,
+            "page_number": page.page_number,
+            "image_path": page.image_path,
+            "image_sha256": page.image_sha256,
+            "page_text": page.page_text,
+            "embedding_model": embed_model,
+            "embedding_modality": embedding_modality,
+            "citation": csl_json(record, &citation_key),
+            "publication_year": record.year(),
+            "canonical_record": record,
+            "quality": record.quality,
+            "pdf_url": artifact.url,
+            "pdf_path": artifact.path,
+            "pdf_sha256": artifact.sha256,
+            "pdf_license": artifact.license
+        }
+    })
+}
+
+fn search_request(
+    corpus_id: &str,
+    vector: Vec<f32>,
+    top_k: usize,
+    candidate_limit: usize,
+) -> Value {
+    json!({
+        "query": vector,
+        "using": "content",
+        "filter": {
+            "must": [{
+                "key": "corpus_id",
+                "match": {"value": corpus_id}
+            }]
+        },
+        "limit": candidate_limit.max(top_k),
+        "with_payload": true,
+        "with_vector": false
+    })
+}
+
+fn scoped_page_id(corpus_id: &str, page_id: &str) -> String {
+    Uuid::new_v5(
+        &POINT_NAMESPACE,
+        format!("{corpus_id}\u{1f}{page_id}").as_bytes(),
+    )
+    .to_string()
 }
 
 fn text(value: &Value, pointer: &str) -> String {
@@ -286,4 +353,72 @@ fn rerank_score_order(left: &SearchResult, right: &SearchResult) -> std::cmp::Or
     left.rerank_score
         .total_cmp(&right.rerank_score)
         .then_with(|| left.vector_score.total_cmp(&right.vector_score))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_payload_always_filters_by_corpus_identity() {
+        let request = search_request("11111111-1111-4111-8111-111111111111", vec![0.5], 5, 20);
+        assert_eq!(
+            request
+                .pointer("/filter/must/0/key")
+                .and_then(Value::as_str),
+            Some("corpus_id")
+        );
+        assert_eq!(
+            request
+                .pointer("/filter/must/0/match/value")
+                .and_then(Value::as_str),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
+    }
+
+    #[test]
+    fn point_ids_cannot_collide_across_corpora() {
+        let page_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        assert_ne!(
+            scoped_page_id("11111111-1111-4111-8111-111111111111", page_id),
+            scoped_page_id("22222222-2222-4222-8222-222222222222", page_id)
+        );
+    }
+
+    #[test]
+    fn indexed_payload_preserves_local_page_and_corpus_identities() {
+        let corpus_id = "11111111-1111-4111-8111-111111111111";
+        let page = PageRecord {
+            page_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),
+            work_id: "doi:10.1000/test".into(),
+            page_number: 3,
+            image_path: "/workspace/pages/3.jpg".into(),
+            image_sha256: "image-sha".into(),
+            page_text: "evidence".into(),
+            width: 100,
+            height: 200,
+            indexed_at: None,
+        };
+        let record = WorkRecord::new("crossref", "10.1000/test");
+        let artifact = PdfArtifact {
+            url: "https://example.org/test.pdf".into(),
+            path: "/workspace/pdfs/test.pdf".into(),
+            sha256: "pdf-sha".into(),
+            license: "CC-BY-4.0".into(),
+        };
+
+        let point = page_point(corpus_id, "embed-model", &page, &record, &artifact, &[0.5]);
+        assert_eq!(
+            point.pointer("/payload/corpus_id").and_then(Value::as_str),
+            Some(corpus_id)
+        );
+        assert_eq!(
+            point.pointer("/payload/page_id").and_then(Value::as_str),
+            Some(page.page_id.as_str())
+        );
+        assert_ne!(
+            point.get("id").and_then(Value::as_str),
+            Some(page.page_id.as_str())
+        );
+    }
 }
