@@ -2,7 +2,7 @@ name: "litmine-${LITMINE_PROJECT:?Set LITMINE_PROJECT to a unique paper slug in 
 
 services:
   litmine:
-    image: "${LITMINE_IMAGE:-ghcr.io/ruisi-lu/academic-literature-mining-skill}:${LITMINE_VERSION:-0.1.2}"
+    image: "${LITMINE_IMAGE:-ghcr.io/ruisi-lu/academic-literature-mining-skill}:${LITMINE_VERSION:-0.1.3}"
     profiles: ["cli"]
     depends_on:
       - qdrant
