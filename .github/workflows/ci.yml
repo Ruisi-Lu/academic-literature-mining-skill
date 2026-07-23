@@ -45,8 +45,9 @@ jobs:
 
       - name: Validate Docker Compose configuration
         run: |
-          cp .env.example .env
-          QDRANT_API_KEY=ci-validation-secret docker compose config --quiet
+          LITMINE_PROJECT=ci-validation \
+            QDRANT_API_KEY=ci-validation-secret \
+            docker compose --profile cli config --quiet
 
   container:
     name: Container build

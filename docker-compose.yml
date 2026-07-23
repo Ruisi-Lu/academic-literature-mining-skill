@@ -1,4 +1,4 @@
-name: academic-literature-mining
+name: "litmine-${LITMINE_PROJECT:?Set LITMINE_PROJECT to a unique paper slug in that paper's .env file}"
 
 services:
   litmine:
@@ -6,8 +6,6 @@ services:
     profiles: ["cli"]
     depends_on:
       - qdrant
-    env_file:
-      - .env
     environment:
       QDRANT_URL: "http://qdrant:6333"
       PDFIUM_AUTO_CACHE_DIR: "/opt/litmine/pdfium"
@@ -16,8 +14,10 @@ services:
     working_dir: /workspace
     volumes:
       - type: bind
-        source: .
+        source: "./projects/${LITMINE_PROJECT:?Set LITMINE_PROJECT before starting this corpus}"
         target: /workspace
+        bind:
+          create_host_path: false
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
@@ -28,11 +28,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.18.2
-    container_name: academic-literature-qdrant
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
     environment:
       QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:?Set QDRANT_API_KEY in .env}"
       QDRANT__SERVICE__ENABLE_CORS: "false"
@@ -44,4 +40,3 @@ services:
 
 volumes:
   qdrant_storage:
-    name: academic-literature-qdrant-storage

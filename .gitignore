@@ -1,5 +1,6 @@
 .env
 .cache/
 corpus/
+projects/
 qdrant_storage/
 target/
