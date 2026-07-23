@@ -65,12 +65,12 @@ before a record can enter the corpus.
   resolution
 - A contact email for polite Crossref requests
 
-`rust-toolchain.toml` follows the official stable channel. Rust is not required on
-the host when using the prebuilt image. For a native build installed through
-rustup, update it before building:
+`rust-toolchain.toml` pins the same Rust release used by the Docker builder. Rust
+is not required on the host when using the prebuilt image. For a native build
+installed through rustup, install the declared toolchain before building:
 
 ```bash
-rustup update stable
+rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
 ```
 
 ## Quick start
