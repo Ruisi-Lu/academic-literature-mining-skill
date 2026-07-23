@@ -1,0 +1,4 @@
+services:
+  qdrant:
+    ports:
+      - "127.0.0.1:${QDRANT_HOST_PORT:?Set a unique QDRANT_HOST_PORT for this native project}:6333"
