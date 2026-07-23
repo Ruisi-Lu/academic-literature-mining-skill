@@ -109,6 +109,10 @@ When `include_paywalled` is `true`, run discovery and screening normally. `litmi
 automatically downloads only independently authorized full text and returns `manual_downloads`
 for the remainder. For every returned item:
 
+Do not discard a verified DOI because public metadata has no abstract. Report that bibliographic
+screening is lower confidence, retain the work for title/year/type/venue triage, and continue to
+the PDF handoff. Never invent an abstract or imply that the work has passed full-text screening.
+
 1. Present its title, DOI, and each `download_urls` value as a clickable link.
 2. Present the exact absolute `destination` path.
 3. If the plan also enables `use_google_scholar_library_access` and the item has a

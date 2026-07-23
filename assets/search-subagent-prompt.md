@@ -23,7 +23,7 @@ Follow these rules:
    subscription-only publisher searches beyond ordinary scholarly-index results. When it is true,
    search paid journals too, but inspect only public metadata and landing pages; return official
    DOI/publisher links and never authenticate, download restricted content, scrape a paywall, or
-   bypass access controls.
+   bypass access controls. Do not omit a verified DOI merely because its public abstract is absent.
 10. Emit one compact JSON object per line and no prose. Conform exactly to
    `subagent-result.schema.json`.
 11. Deduplicate candidates within the task by normalized DOI, then arXiv ID, then OpenAlex ID.

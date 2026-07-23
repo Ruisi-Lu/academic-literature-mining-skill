@@ -292,12 +292,18 @@ Hard exclusions include:
 
 - retracted, withdrawn, or paratext records;
 - unsupported publication types;
-- missing title, identifiable authorship, publication year, or screening abstract;
+- missing title, identifiable authorship, or publication year;
 - invalid persistent identifiers;
 - disallowed language, date range, or preprint status;
 - missing independently authorized PDF unless the plan explicitly enables the
   manual paywalled-PDF workflow;
 - quality or relevance below the research-plan thresholds.
+
+A missing public abstract is incomplete metadata, not a hard rejection. The runtime records
+`screening-abstract-unavailable:+0` and performs conservative title/year/type/venue triage. For a
+paywalled record, obtain and validate the user-authorized PDF before using it as evidence. Existing
+records rejected only for this reason can be recovered by upgrading, rerunning `screen` with the
+preserved plan, and then running `download`; discovery does not need to be repeated.
 
 The 0–100 quality score combines scholarly type, persistent identifiers, metadata
 completeness, age-normalized citations, field-normalized signals, influential

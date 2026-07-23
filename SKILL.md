@@ -226,6 +226,18 @@ cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" audit -
 cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" export --workspace "projects/$PROJECT_SLUG"
 ```
 
+Do not hard-reject a verified scholarly record only because Crossref, OpenAlex, or another public
+metadata source omits its abstract. Preserve the DOI and canonical metadata, record
+`screening-abstract-unavailable:+0`, and let Nemotron perform conservative bibliographic triage
+from the title, year, type, and venue. Treat that triage as low-confidence: obtain and verify the
+authorized PDF before using the work as evidence. When `include_paywalled` is enabled, continue to
+the normal manual or authorized Scholar handoff.
+
+After upgrading a workspace whose candidates were rejected only for missing abstracts, do not
+repeat discovery. Confirm the preserved plan still reflects the user's paywalled-access choice,
+rerun `screen` (which reconsiders stored `rejected` records), then run `download` and present every
+manual handoff.
+
 ## Hand off paywalled PDFs to the user
 
 Never download restricted content. After `download`, inspect its
@@ -288,8 +300,9 @@ After upgrading a pre-isolation workspace, follow the migration procedure in
 once to assign its persistent `corpus_id`; this queues legacy indexed pages for
 the new `academic_literature_v2` collection. Re-ingest before querying.
 
-Inspect `status` and the audit output after every large run. Do not treat a network
-retry, a missing abstract, or an inaccessible PDF as a successful source.
+Inspect `status` and the audit output after every large run. A missing public abstract is incomplete
+metadata, not a rejection reason and not evidence that screening is complete. Do not treat a
+network retry or inaccessible PDF as a successful source.
 
 ## Query the live corpus
 

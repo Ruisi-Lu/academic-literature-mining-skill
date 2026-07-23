@@ -36,7 +36,7 @@ Reject a work when any of these conditions applies:
 - authoritative metadata marks it retracted or withdrawn;
 - it is paratext, an editorial, a peer-review record, a dataset-only record, news, slides, or a
   poster rather than an eligible scholarly work;
-- title, identifiable authorship, publication year, or screening abstract is unavailable;
+- title, identifiable authorship, or publication year is unavailable;
 - the research plan excludes its document type or preprint status;
 - it is a preprint that is not explicitly allowed as an indispensable exception by the research
   plan;
@@ -64,6 +64,12 @@ full-text points and records `manual-fulltext-required:+0`. It is an access work
 not evidence of quality, permission, or an open license. Do not rerank or inspect the full text
 until the user supplies the correct PDF through the designated path.
 
+An abstract omitted by public metadata is not a hard exclusion. Preserve the empty field without
+fabrication, record `screening-abstract-unavailable:+0`, award no abstract-completeness points, and
+perform only low-confidence bibliographic triage. A verified persistent identifier is still
+required. Obtain and validate an authorized PDF before treating the work as evidence or applying
+full-text inclusion criteria.
+
 Assign tiers:
 
 - A: 80–100
@@ -76,8 +82,8 @@ with truth, methodological validity, journal impact factor, or peer-review statu
 
 ## Relevance and final priority
 
-Rerank title, venue, type, year, and abstract against the research question and explicit inclusion
-and exclusion criteria using:
+Rerank title, venue, type, year, and the abstract when available against the research question and
+explicit inclusion and exclusion criteria using:
 
 `nvidia/llama-nemotron-rerank-vl-1b-v2`
 

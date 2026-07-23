@@ -43,3 +43,6 @@ candidate stream. Do not relax the persistent-identifier requirement to increase
 
 If two workers disagree, preserve both evidence URLs and let authoritative metadata resolution
 decide. Never ask a worker to fabricate missing authors, dates, DOI values, page ranges, or venues.
+Do not discard an otherwise verified identifier solely because the worker or public metadata source
+cannot provide an abstract; the coordinator records that incompleteness and applies conservative
+bibliographic triage.
