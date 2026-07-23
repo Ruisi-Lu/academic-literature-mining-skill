@@ -85,8 +85,9 @@ Map these concepts to the local manifest:
 | `output_contract` | Require UTF-8 NDJSON conforming to `assets/subagent-result.schema.json`. |
 | `prompt_template` | Install `assets/search-subagent-prompt.md` as the role's system/task prompt. |
 
-Do not pass `NVIDIA_API_KEY`, `QDRANT_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`, or unrelated
-environment variables to search workers. The coordinator alone imports and verifies results.
+Do not pass `NVIDIA_API_KEY`, `QDRANT_API_KEY`, `SEMANTIC_SCHOLAR_API_KEY`,
+`ELSEVIER_API_KEY`, or unrelated environment variables to search workers. The coordinator alone
+imports and verifies results.
 
 ## 4. Shard discovery work
 
@@ -189,6 +190,9 @@ checking configuration. In particular:
 - set `CONTACT_EMAIL` for Crossref requests;
 - ask before enabling optional Semantic Scholar enrichment and, if accepted, request its key at
   <https://www.semanticscholar.org/product/api#api-key-form>.
+- ask before enabling `use_sciencedirect_abstracts` and, if accepted, have the user sign in,
+  review the API terms, and request `ELSEVIER_API_KEY` at <https://dev.elsevier.com/>. Store it only
+  in this paper's `.env`; do not ask the user to paste it into chat.
 
 Set real secrets only in the selected project's `.env`. Keep both required model IDs unchanged:
 
@@ -252,9 +256,10 @@ layer.
 ## 8. Run a corpus
 
 Before editing the plan, ask whether to enable `include_preprints`, `include_paywalled`,
-`use_google_scholar_library_access`, and optional Semantic Scholar enrichment. All are disabled by
-default. Enabling paywalled access requires the lawful-access and external-processing confirmation
-in [`references/user-interaction.md`](references/user-interaction.md).
+`use_google_scholar_library_access`, `use_sciencedirect_abstracts`, and optional Semantic Scholar
+enrichment. All are disabled by default. Enabling paywalled access requires the lawful-access and
+external-processing confirmation in
+[`references/user-interaction.md`](references/user-interaction.md).
 
 ```bash
 cargo run --release --locked -- \
@@ -297,6 +302,13 @@ When upgrading a workspace created with version `0.1.0`, run
 DOI-backed arXiv preprints through Crossref and queues verified formal versions
 for screening without discarding the authorized arXiv PDF or provenance.
 `screen` also performs the metadata refresh automatically.
+
+For existing records rejected only because their public metadata omitted the abstract, do not
+repeat discovery. Ask whether to enable ScienceDirect enrichment; if accepted, place the user's
+own `ELSEVIER_API_KEY` in this paper's `.env`, set `use_sciencedirect_abstracts` to `true`, and
+rerun `screen`. It requests only DOI-matched `META_ABS` metadata. If the user declines or the API
+cannot return an abstract, the record remains eligible for conservative bibliographic triage and
+the authorized PDF handoff.
 
 When upgrading a corpus produced by the older image-only pipeline, run
 `render --refresh-existing` followed by `ingest` once. The SQLite migration is automatic, while

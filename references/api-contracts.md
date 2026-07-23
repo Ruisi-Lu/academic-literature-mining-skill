@@ -70,6 +70,12 @@ marking SQLite pages as indexed. When migrating legacy data, use the new
   citation enrichment source.
 - arXiv: respect the API delay and treat repository PDFs as authorized submitted versions.
 - Semantic Scholar: enrich citations and open-access locations only when an API key is available.
+- ScienceDirect Article Retrieval: only after explicit opt-in, send the user's
+  `ELSEVIER_API_KEY` as `X-ELS-APIKey` to
+  `https://api.elsevier.com/content/article/doi/{doi}` with `view=META_ABS` and JSON output. Use
+  `dc:description` only after `prism:doi` or the DOI-form `dc:identifier` matches the requested
+  normalized DOI. Treat 403, 404, and an absent description as unavailable metadata; never turn
+  this abstract option into a full-text request or page-scraping path.
 
 Never treat a Crossref TDM link alone as proof of open access. Authorize downloads only from an
 open-access metadata assertion, an open license, or a recognized public repository. Never use
@@ -99,3 +105,6 @@ coordinator-provided path, and confirm completion. Do not receive or automate th
 - arXiv API user manual: <https://info.arxiv.org/help/api/user-manual.html>
 - Semantic Scholar Academic Graph API:
   <https://api.semanticscholar.org/api-docs/graph>
+- Elsevier API authentication and ScienceDirect Article Retrieval:
+  <https://dev.elsevier.com/tecdoc_api_authentication.html> and
+  <https://dev.elsevier.com/documentation/ArticleRetrievalAPI.wadl>

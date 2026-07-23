@@ -41,6 +41,7 @@ search-worker environments. Pass the exact project file to every Compose call wi
 | `CONTACT_EMAIL` | Crossref discovery or DOI resolution | Set `CONTACT_EMAIL=<address>` in the project `.env` for Crossref polite-pool requests. This is an email address, not a token. |
 | `QDRANT_API_KEY` | Bundled local Qdrant and all `ingest` or `query` operations | No vendor token is issued for the bundled self-hosted service. Have the user generate a different strong secret for each paper, for example with `openssl rand -hex 32`, and set `QDRANT_API_KEY=<secret>` in the project `.env`; that paper's Compose project and `litmine` read the same value. For Qdrant Cloud, direct the user to the cluster’s Database API Keys page instead. |
 | `SEMANTIC_SCHOLAR_API_KEY` | Optional Semantic Scholar enrichment only | Ask whether to enable this enrichment. If yes, request a key at <https://www.semanticscholar.org/product/api#api-key-form>, wait for the emailed key, and set `SEMANTIC_SCHOLAR_API_KEY=<key>` in the project `.env`. If no, leave it empty. |
+| `ELSEVIER_API_KEY` | `screen` or `mine` only when `use_sciencedirect_abstracts` is enabled | Ask whether to enable ScienceDirect abstract enrichment. If yes, direct the user to <https://dev.elsevier.com/>, have them sign in, review the API terms, request their own key, and set `ELSEVIER_API_KEY=<key>` in this paper's `.env`. Wait for confirmation without asking them to paste the key. If they decline or cannot obtain a key, leave the variable empty and the plan switch `false`. |
 
 After container setup, run:
 
@@ -89,7 +90,27 @@ applicable switch. Treat no answer as disabled; never infer consent from an exis
   [chrome-library-access.md](chrome-library-access.md) before offering it.
 - Semantic Scholar enrichment (default off): ask whether to use it and explain that it needs the
   optional key above.
+- `use_sciencedirect_abstracts` (default `false`): ask whether the coordinator may use Elsevier's
+  official Article Retrieval API to fill DOI-matched missing abstracts. Explain that it needs the
+  user's own API key, API availability and access depend on Elsevier's terms and entitlements, and
+  the fallback remains low-confidence title/year/type/venue triage.
 - `--refresh-existing` (default off): ask before rebuilding already rendered or indexed pages.
+
+When ScienceDirect enrichment is accepted, guide the user through these manual actions and wait
+for confirmation before running `screen`:
+
+1. Open <https://dev.elsevier.com/>, sign in, review the API terms, and request an API key.
+2. Open only `projects/<slug>/.env` and add `ELSEVIER_API_KEY=<key>`; do not add quotes, paste it
+   into chat, commit it, or place it in a search-worker environment.
+3. Set `"use_sciencedirect_abstracts": true` in that paper's `research-plan.json` only after the
+   user confirms the option.
+4. Run `screen` with that exact project `.env` and plan. A missing or HTTP-401-rejected key is an
+   actionable configuration error. Per-article 403, 404, or missing-abstract responses remain
+   incomplete metadata and continue through conservative bibliographic triage.
+
+This switch requests `view=META_ABS`, not full text. The coordinator must verify that the returned
+DOI matches the requested DOI before merging the abstract, retain the raw response as provenance,
+and never scrape a ScienceDirect paywall or reuse browser cookies as API authentication.
 
 Before enabling `include_paywalled`, tell the user that automatic paywall access remains forbidden.
 Require confirmation that they will use lawful personal or institutional access and that their

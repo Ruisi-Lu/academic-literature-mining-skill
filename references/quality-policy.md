@@ -70,6 +70,12 @@ perform only low-confidence bibliographic triage. A verified persistent identifi
 required. Obtain and validate an authorized PDF before treating the work as evidence or applying
 full-text inclusion criteria.
 
+When the user explicitly enables `use_sciencedirect_abstracts`, the coordinator may try the
+official ScienceDirect Article Retrieval API before this fallback. Merge only a nonempty abstract
+whose returned DOI matches the requested DOI, preserve the raw API response as provenance, and
+then award the normal abstract-completeness points. API failure, insufficient entitlement, or an
+empty description does not become a rejection reason and does not authorize full-text use.
+
 Assign tiers:
 
 - A: 80–100

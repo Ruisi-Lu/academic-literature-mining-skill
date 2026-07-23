@@ -30,6 +30,9 @@ erase provenance.
 When no public abstract is available, preserve `abstract_text` as empty and record
 `screening-abstract-unavailable:+0`. Never fabricate the abstract or use its absence alone as a
 rejection reason; the work remains incomplete until authorized full text is obtained and checked.
+If ScienceDirect abstract enrichment is explicitly enabled, store the exact `META_ABS` response
+as a `sciencedirect` source record and merge `dc:description` only after an exact normalized DOI
+match. The source is abstract provenance, not a full-text license or permission assertion.
 
 Preserve the normalized active research plan at `metadata/research-plan.json` and an immutable,
 content-addressed copy under `metadata/plans/` whenever discovery or screening runs.

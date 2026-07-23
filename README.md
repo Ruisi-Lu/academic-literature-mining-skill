@@ -3,7 +3,8 @@
 A citation-complete, agent-assisted scholarly literature mining system built in
 Rust. It discovers academically valuable papers, verifies persistent identifiers,
 downloads authorized PDFs, optionally hands subscription PDFs off through a
-lawful user or browser-assisted library workflow, indexes complete PDF pages as
+lawful user or browser-assisted library workflow, optionally fills DOI-matched
+missing abstracts through the official ScienceDirect API, indexes complete PDF pages as
 native text plus page images with NVIDIA Nemotron, and stores retrievable evidence
 in Qdrant.
 
@@ -18,7 +19,8 @@ Key properties:
 
 - Pure Rust runtime with PDFium-native text and page-image preparation.
 - Budget-model subagents perform bounded, read-only candidate discovery.
-- Crossref, OpenAlex, arXiv, and optional Semantic Scholar enrichment.
+- Crossref, OpenAlex, arXiv, optional Semantic Scholar enrichment, and opt-in ScienceDirect
+  abstract retrieval.
 - NVIDIA Build hosted inference with:
   - `nvidia/llama-nemotron-embed-vl-1b-v2`
   - `nvidia/llama-nemotron-rerank-vl-1b-v2`
@@ -39,7 +41,7 @@ Key properties:
 ```mermaid
 flowchart LR
     A[Budget search subagents] -->|Strict NDJSON IDs| B[Rust coordinator]
-    C[Crossref / OpenAlex / arXiv] -->|Authoritative metadata| B
+    C[Crossref / OpenAlex / arXiv / ScienceDirect] -->|Authoritative metadata| B
     B --> D{Academic value<br/>and relevance gates}
     D -->|Accepted + authorized| E[Original PDF archive]
     D -->|Opt-in restricted access| M[User / library-linked Chrome]
@@ -100,6 +102,11 @@ OpenAlex key from <https://openalex.org/settings/api>. `QDRANT_API_KEY` is a
 locally generated secret for the bundled self-hosted service, not a vendor-issued
 token. See [`references/user-interaction.md`](references/user-interaction.md) for
 stage-specific setup and safe secret handling.
+
+ScienceDirect abstract enrichment is independently disabled by default. If the user opts in, get
+their API key from <https://dev.elsevier.com/>, put `ELSEVIER_API_KEY=<key>` only in this paper's
+`.env`, and set `use_sciencedirect_abstracts` to `true` in its research plan. Never paste or commit
+the key.
 
 Do not reuse or copy another paper's project directory. SQLite, PDFs, rendered
 pages, and exports stay under `projects/<slug>/`; Compose creates a separate
@@ -179,6 +186,8 @@ Start from `assets/research-plan.example.json`. A plan defines:
 - whether paywalled records are eligible for a manual handoff (`include_paywalled`);
 - whether an already authenticated library-linked Chrome session may resolve
   pending DOIs (`use_google_scholar_library_access`);
+- whether likely ScienceDirect records with missing abstracts may use the official Article
+  Retrieval API (`use_sciencedirect_abstracts`);
 - minimum academic-value and relevance scores;
 - corpus size and discovery stopping limits.
 
@@ -229,6 +238,13 @@ become canonical; the arXiv ID, richer abstract, authorized PDF, and source
 provenance remain attached. Promoted `rejected` records return to `discovered` so
 they can be screened again. The `screen` command automatically runs the same
 refresh before applying its hard preprint gate.
+
+When `use_sciencedirect_abstracts` is explicitly enabled, `screen` also requests
+`view=META_ABS` for likely ScienceDirect records that still have an empty abstract. It merges only
+a nonempty `dc:description` whose returned DOI matches the requested DOI and stores the raw API
+response as provenance. This option does not retrieve or authorize full text. Per-article 403,
+404, and empty responses fall back to conservative bibliographic triage; a missing or rejected
+API key produces an actionable configuration error.
 
 To migrate an existing workspace, run:
 
@@ -303,7 +319,9 @@ A missing public abstract is incomplete metadata, not a hard rejection. The runt
 `screening-abstract-unavailable:+0` and performs conservative title/year/type/venue triage. For a
 paywalled record, obtain and validate the user-authorized PDF before using it as evidence. Existing
 records rejected only for this reason can be recovered by upgrading, rerunning `screen` with the
-preserved plan, and then running `download`; discovery does not need to be repeated.
+preserved plan, and then running `download`; discovery does not need to be repeated. Before that
+rerun, ask whether to enable the optional ScienceDirect abstract lookup rather than inferring
+consent from an existing key.
 
 The 0–100 quality score combines scholarly type, persistent identifiers, metadata
 completeness, age-normalized citations, field-normalized signals, influential

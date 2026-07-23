@@ -1,6 +1,6 @@
 ---
 name: academic-literature-mining
-description: Mine, screen, acquire, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, SQLite relational state, and isolated per-paper Compose projects. Includes explicit missing-token onboarding, opt-in paywalled-journal search with a resumable user-download handoff, and optional DOI-by-DOI Google Scholar library access through an authorized Chrome DevTools MCP session. Use when Codex must build or update one or more citation-complete research corpora without cross-paper data leakage, conduct agent-assisted literature discovery, guide scholarly API or browser setup, preserve authorized or explicitly user-supplied PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
+description: Mine, screen, acquire, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, SQLite relational state, and isolated per-paper Compose projects. Includes explicit missing-token onboarding, opt-in ScienceDirect abstract enrichment, opt-in paywalled-journal search with a resumable user-download handoff, and optional DOI-by-DOI Google Scholar library access through an authorized Chrome DevTools MCP session. Use when Codex must build or update one or more citation-complete research corpora without cross-paper data leakage, conduct agent-assisted literature discovery, guide scholarly API or browser setup, preserve authorized or explicitly user-supplied PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
 ---
 
 # Academic Literature Mining
@@ -133,7 +133,8 @@ Edit `projects/<slug>/research-plan.json` for the research question.
 Before editing any switch, ask the user whether to enable it. Treat silence as
 disabled; do not infer consent from an existing key. At minimum ask about
 `include_preprints`, `include_paywalled`,
-`use_google_scholar_library_access`, and optional Semantic Scholar enrichment.
+`use_google_scholar_library_access`, `use_sciencedirect_abstracts`, and optional Semantic Scholar
+enrichment.
 For `include_paywalled`, explain the lawful-access and external
 NVIDIA-processing conditions in
 [references/user-interaction.md](references/user-interaction.md) and require an
@@ -153,6 +154,8 @@ Specify:
 - a `use_google_scholar_library_access` value of `false` by default; enable it
   only for an existing user-configured library affiliation and after reading
   [references/chrome-library-access.md](references/chrome-library-access.md);
+- a `use_sciencedirect_abstracts` value of `false` by default; enable it only after the user asks
+  to use Elsevier's Article Retrieval API and has placed `ELSEVIER_API_KEY` in this paper's `.env`;
 - minimum quality score and corpus size;
 - a `min_relevance_score` of `0.0` for rank-only triage unless a nonzero cutoff
   has been calibrated on labeled examples for this exact screening query;
@@ -233,10 +236,19 @@ from the title, year, type, and venue. Treat that triage as low-confidence: obta
 authorized PDF before using the work as evidence. When `include_paywalled` is enabled, continue to
 the normal manual or authorized Scholar handoff.
 
+If the user explicitly enables `use_sciencedirect_abstracts`, obtain `ELSEVIER_API_KEY` from
+<https://dev.elsevier.com/>, save it only as `ELSEVIER_API_KEY=<key>` in
+`projects/<slug>/.env`, and rerun `screen`. The coordinator calls the official Article Retrieval
+API with `view=META_ABS` only for likely ScienceDirect records whose abstract is empty. Accept an
+abstract only when the returned DOI normalizes to the requested DOI. Do not scrape the
+ScienceDirect page, request full text through this option, infer access rights, or expose the key.
+An unavailable or unauthorized article-level response falls back to bibliographic triage; a
+missing or rejected key requires the user to correct the project `.env` or disable the switch.
+
 After upgrading a workspace whose candidates were rejected only for missing abstracts, do not
 repeat discovery. Confirm the preserved plan still reflects the user's paywalled-access choice,
-rerun `screen` (which reconsiders stored `rejected` records), then run `download` and present every
-manual handoff.
+ask separately whether to enable ScienceDirect enrichment, rerun `screen` (which reconsiders
+stored `rejected` records), then run `download` and present every manual handoff.
 
 ## Hand off paywalled PDFs to the user
 
