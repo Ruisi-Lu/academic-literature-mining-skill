@@ -321,6 +321,11 @@ impl WorkRecord {
     }
 
     pub fn screening_passage(&self) -> String {
+        let abstract_text = if self.abstract_text.trim().is_empty() {
+            "Unavailable in public metadata; bibliographic triage only"
+        } else {
+            &self.abstract_text
+        };
         format!(
             "Title: {}\nYear: {}\nType: {}\nVenue: {}\nAbstract: {}",
             self.title,
@@ -328,7 +333,7 @@ impl WorkRecord {
                 .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
             self.work_type,
             self.container_title,
-            self.abstract_text
+            abstract_text
         )
     }
 
@@ -659,6 +664,15 @@ mod tests {
         record.ids.insert("arxiv".into(), "2401.00001v2".into());
         assert_eq!(record.identity(), "arxiv:2401.00001");
         assert_eq!(record.ids["arxiv"], "2401.00001v2");
+    }
+
+    #[test]
+    fn screening_passage_marks_unavailable_public_abstracts() {
+        let mut record = WorkRecord::new("crossref", "10.1016/example");
+        record.title = "A subscription article".into();
+        let passage = record.screening_passage();
+        assert!(passage.contains("Abstract: Unavailable in public metadata"));
+        assert!(passage.contains("bibliographic triage only"));
     }
 
     #[test]

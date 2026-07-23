@@ -35,9 +35,10 @@ pub fn assess(record: &WorkRecord, plan: &ResearchPlan) -> QualityAssessment {
         score += 5.0;
     }
     if record.abstract_text.trim().is_empty() {
-        rejection_reasons.push("missing abstract for relevance screening".to_owned());
+        signals.push("screening-abstract-unavailable:+0".to_owned());
     } else {
         score += 8.0;
+        signals.push("screening-abstract:+8".to_owned());
     }
 
     if let Some(year) = record.year() {
@@ -315,6 +316,39 @@ mod tests {
                 .signals
                 .iter()
                 .any(|signal| signal == "manual-fulltext-required:+0")
+        );
+    }
+
+    #[test]
+    fn missing_public_abstract_is_incomplete_metadata_not_a_hard_rejection() {
+        let mut record = WorkRecord::new("crossref", "10.1016/example");
+        record.ids.insert("doi".into(), "10.1016/example".into());
+        record.title = "A subscription article without public abstract metadata".into();
+        record.authors.push(Author {
+            family: "Researcher".into(),
+            ..Author::default()
+        });
+        record.issued.date_parts = vec![vec![2024]];
+        record.work_type = "article-journal".into();
+        record.container_title = "Journal of Tests".into();
+
+        let mut opted_in_plan = plan();
+        opted_in_plan.include_paywalled = true;
+        opted_in_plan.min_quality_score = 0.0;
+        let assessment = assess(&record, &opted_in_plan);
+
+        assert!(assessment.accepted);
+        assert!(
+            assessment
+                .signals
+                .iter()
+                .any(|signal| signal == "screening-abstract-unavailable:+0")
+        );
+        assert!(
+            assessment
+                .rejection_reasons
+                .iter()
+                .all(|reason| !reason.contains("abstract"))
         );
     }
 }

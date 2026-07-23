@@ -253,16 +253,7 @@ async fn search_openalex(
     let mut output = Vec::new();
     let mut cursor = "*".to_owned();
     while output.len() < limit {
-        let mut filters = vec![
-            "is_retracted:false".to_owned(),
-            "has_abstract:true".to_owned(),
-        ];
-        if let Some(value) = &plan.date_from {
-            filters.push(format!("from_publication_date:{value}"));
-        }
-        if let Some(value) = &plan.date_to {
-            filters.push(format!("to_publication_date:{value}"));
-        }
+        let filters = openalex_filters(plan);
         let per_page = (limit - output.len()).min(100).to_string();
         let params = vec![
             ("search", query.to_owned()),
@@ -313,6 +304,17 @@ async fn search_openalex(
         cursor = next.to_owned();
     }
     Ok(output)
+}
+
+fn openalex_filters(plan: &ResearchPlan) -> Vec<String> {
+    let mut filters = vec!["is_retracted:false".to_owned()];
+    if let Some(value) = &plan.date_from {
+        filters.push(format!("from_publication_date:{value}"));
+    }
+    if let Some(value) = &plan.date_to {
+        filters.push(format!("to_publication_date:{value}"));
+    }
+    filters
 }
 
 async fn search_crossref(
@@ -1157,6 +1159,22 @@ mod tests {
     fn reconstructs_openalex_abstract() {
         let value = json!({"world": [1], "Hello": [0]});
         assert_eq!(abstract_from_inverted(Some(&value)), "Hello world");
+    }
+
+    #[test]
+    fn openalex_discovery_does_not_hide_records_without_public_abstracts() {
+        let plan: ResearchPlan = serde_json::from_value(json!({
+            "research_question": "question",
+            "queries": ["query"]
+        }))
+        .unwrap();
+        let filters = openalex_filters(&plan);
+        assert!(filters.iter().any(|filter| filter == "is_retracted:false"));
+        assert!(
+            filters
+                .iter()
+                .all(|filter| !filter.starts_with("has_abstract:"))
+        );
     }
 
     #[test]
