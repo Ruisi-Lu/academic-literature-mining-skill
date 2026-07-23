@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.18
 
 ARG RUST_VERSION=1.97.1
 
