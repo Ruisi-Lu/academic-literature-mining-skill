@@ -105,7 +105,8 @@ Concatenate successful worker outputs into one NDJSON file, then import it:
 
 ```bash
 cargo run --release --manifest-path Cargo.toml -- \
-  import-agent-results spool/candidates.ndjson --workspace corpus
+  import-agent-results projects/<slug>/inbox/candidates.ndjson \
+  --workspace projects/<slug>
 ```
 
 The Rust coordinator resolves persistent identifiers against authoritative metadata, deduplicates
@@ -119,11 +120,20 @@ Docker is missing, point to <https://docs.docker.com/engine/install/> (or the ap
 Docker Desktop instructions), explain the host-level changes, and install it only after explicit
 authorization. Native mode remains supported.
 
-Create the runtime environment file in either mode:
+Read [`references/project-isolation.md`](references/project-isolation.md). Ask the user to choose
+or confirm a unique paper slug, refuse to overwrite an existing project, and create its runtime
+workspace in either mode:
 
 ```bash
-cp .env.example .env
+PROJECT_SLUG=paper-a
+test ! -e "projects/$PROJECT_SLUG"
+mkdir -p "projects/$PROJECT_SLUG"
+cp .env.example "projects/$PROJECT_SLUG/.env"
+cp assets/research-plan.example.json "projects/$PROJECT_SLUG/research-plan.json"
 ```
+
+Replace `paper-a` before running these commands. Set `LITMINE_PROJECT` in the new `.env` to the
+exact same slug. Never copy another paper's workspace to initialize this one.
 
 ### Prebuilt release image
 
@@ -137,14 +147,15 @@ published and not a draft at:
 https://github.com/Ruisi-Lu/academic-literature-mining-skill/releases/tag/vX.Y.Z
 ```
 
-Set `LITMINE_VERSION=X.Y.Z` in `.env`. Confirm that `LITMINE_IMAGE` remains the canonical GHCR
+Set `LITMINE_VERSION=X.Y.Z` in `projects/<slug>/.env`. Confirm that `LITMINE_IMAGE` remains the canonical GHCR
 path, explain the image download and disk impact, and then pull and verify the exact image:
 
 ```bash
 git fetch --tags --prune origin
 git rev-parse --verify "refs/tags/vX.Y.Z^{commit}"
-docker compose pull litmine
-docker compose run --rm --no-deps litmine --version
+docker compose --env-file "projects/$PROJECT_SLUG/.env" pull litmine
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm --no-deps \
+  litmine --version
 docker image inspect \
   "ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z" \
   --format '{{ index .Config.Labels "org.opencontainers.image.version" }}'
@@ -161,14 +172,13 @@ for a user who is legitimately authorized to access a private package.
 From the skill directory:
 
 ```bash
-rustup update stable
+rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
 rustc --version
 cargo build --release --locked
 ```
 
-The project follows the official Rust stable channel through `rust-toolchain.toml` and requires
-Rust `1.97.1` or newer. If Rust is managed without rustup, install an equivalent current stable
-toolchain and run Cargo directly.
+The project pins Rust `1.97.1` through `rust-toolchain.toml`. If Rust is managed without rustup,
+install that compatible toolchain and run Cargo directly.
 
 Read [`references/user-interaction.md`](references/user-interaction.md) and guide the user through
 every missing parameter. Do not ask them to paste a key into chat or expose secret values while
@@ -180,7 +190,7 @@ checking configuration. In particular:
 - ask before enabling optional Semantic Scholar enrichment and, if accepted, request its key at
   <https://www.semanticscholar.org/product/api#api-key-form>.
 
-Set real secrets in `.env`. Keep both required model IDs unchanged:
+Set real secrets only in the selected project's `.env`. Keep both required model IDs unchanged:
 
 ```dotenv
 NEMOTRON_EMBED_MODEL_ID=nvidia/llama-nemotron-embed-vl-1b-v2
@@ -189,16 +199,27 @@ NEMOTRON_RERANK_MODEL_ID=nvidia/llama-nemotron-rerank-vl-1b-v2
 
 ## 6. Start Qdrant
 
-The bundled self-hosted Qdrant does not issue a vendor token. Guide the user to generate a strong
-local secret (for example, `openssl rand -hex 32`) and set it as `QDRANT_API_KEY` in `.env`.
-Docker Compose and the Rust client read the same value. Explain that the next command starts a
-persistent localhost-only service, then start it after the user is ready:
+The bundled self-hosted Qdrant does not issue a vendor token. Guide the user to generate a
+different strong local secret for this paper (for example, `openssl rand -hex 32`) and set it as
+`QDRANT_API_KEY` in `projects/<slug>/.env`. Docker Compose and the Rust client read the same value.
+
+In container mode, explain that the next command starts a persistent service only on this paper's
+private Compose network and project-scoped volume, then start it after the user is ready:
 
 ```bash
-docker compose up -d qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" up -d qdrant
 ```
 
-Do not expose ports 6333 or 6334 beyond localhost without TLS and network access controls.
+In native Rust mode only, choose a unique loopback port, set matching `QDRANT_HOST_PORT` and
+`QDRANT_URL` values in the project `.env`, and explicitly apply the native override:
+
+```bash
+docker compose \
+  -f docker-compose.yml -f docker-compose.native.yml \
+  --env-file "projects/$PROJECT_SLUG/.env" up -d qdrant
+```
+
+Do not expose ports 6333 or 6334 beyond loopback without TLS and network access controls.
 
 ## 7. Validate the installation
 
@@ -206,7 +227,10 @@ The prebuilt image already contains PDFium. Validate its NVIDIA configuration, b
 Qdrant without a host Rust toolchain:
 
 ```bash
-docker compose run --rm litmine doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  init --workspace /workspace
 ```
 
 For native mode, explain that `--prepare-pdfium` downloads and caches a native PDFium library. Ask
@@ -214,6 +238,7 @@ before enabling that switch, then validate NVIDIA configuration, Qdrant, and the
 
 ```bash
 cargo run --release --locked -- \
+  --env-file "projects/$PROJECT_SLUG/.env" \
   doctor --prepare-pdfium --check-qdrant
 cargo test --locked
 ```
@@ -233,17 +258,17 @@ in [`references/user-interaction.md`](references/user-interaction.md).
 
 ```bash
 cargo run --release --locked -- \
-  mine --plan assets/research-plan.example.json \
-  --workspace corpus --max-candidates 1000
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  mine --plan "projects/$PROJECT_SLUG/research-plan.json" \
+  --workspace "projects/$PROJECT_SLUG" --max-candidates 1000
 ```
 
-For the prebuilt image, run the equivalent command against the complete checkout mounted at
-`/workspace`:
+For the prebuilt image, mount only the selected paper's ignored project workspace at `/workspace`:
 
 ```bash
-docker compose run --rm litmine \
-  mine --plan /workspace/assets/research-plan.example.json \
-  --workspace /workspace/corpus --max-candidates 1000
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  mine --plan /workspace/research-plan.json \
+  --workspace /workspace --max-candidates 1000
 ```
 
 For controlled or resumable execution, run `discover`, `screen`, `download`, `render`, `ingest`,
@@ -255,8 +280,10 @@ follow [`references/chrome-library-access.md`](references/chrome-library-access.
 present the links and paths to the user and pause. After the file is placed, rerun `download` to
 validate, hash, and register it, then continue with `render`, `ingest`, `audit`, and `export`.
 Never automate restricted access or receive publisher credentials. Container handoffs report a
-path below `/workspace/corpus`; its host equivalent is the same relative path below
-`INSTALL_DIR/corpus`, which is bind-mounted read-write.
+path below `/workspace`; its host equivalent is the same relative path below
+`INSTALL_DIR/projects/<slug>/`, which is bind-mounted read-write. SQLite lives at
+`projects/<slug>/state.sqlite3`; it is embedded workspace state and does not need a Compose
+service.
 
 Chrome DevTools MCP is a user-scope optional dependency, not a repository dependency. Do not add
 Node/npm, `.prototools`, Chrome settings, or an MCP manifest here. If `chrome-devtools` is absent,
@@ -265,8 +292,8 @@ then install it through the host runtime with proto-managed Node/npm. Reload the
 the tools before use; without authorization, retain the manual fallback.
 
 When upgrading a workspace created with version `0.1.0`, run
-`refresh-metadata --workspace corpus` followed by
-`screen --plan <preserved-plan> --workspace corpus`. This re-resolves
+`refresh-metadata --workspace projects/<slug>` followed by
+`screen --plan <preserved-plan> --workspace projects/<slug>`. This re-resolves
 DOI-backed arXiv preprints through Crossref and queues verified formal versions
 for screening without discarding the authorized arXiv PDF or provenance.
 `screen` also performs the metadata refresh automatically.
@@ -275,7 +302,12 @@ When upgrading a corpus produced by the older image-only pipeline, run
 `render --refresh-existing` followed by `ingest` once. The SQLite migration is automatic, while
 the explicit refresh avoids unexpectedly rerendering every indexed PDF during normal runs.
 
+For any workspace created before per-paper isolation, follow
+[`references/project-isolation.md`](references/project-isolation.md). After placing it under one
+authorized `projects/<slug>/`, run `init` once to persist `corpus_id`, then re-ingest its queued
+pages into `academic_literature_v2` before querying.
+
 For every later upgrade, require a clean worktree, fetch complete history and tags, and use
 `git pull --ff-only`. Then reread the new `Cargo.toml` version, verify its matching published
-`vX.Y.Z` release, update `LITMINE_VERSION` in `.env`, and pull that exact image. Never update the
-container independently of its complete Git checkout.
+`vX.Y.Z` release, update `LITMINE_VERSION` in `projects/<slug>/.env`, and pull that exact image.
+Never update the container independently of its complete Git checkout.

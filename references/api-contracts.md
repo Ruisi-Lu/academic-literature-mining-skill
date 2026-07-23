@@ -37,19 +37,30 @@ collection if the embedding model or vector dimension changes.
 
 ## Qdrant
 
-Run Qdrant with `docker-compose.yml`, pinned to `qdrant/qdrant:v1.18.2`. Use one collection with a
-named `content` vector, cosine distance, on-disk vectors, and on-disk payloads.
+Run Qdrant with `docker-compose.yml`, pinned to `qdrant/qdrant:v1.18.2`. In the default container
+workflow, use one Compose project, private network, Qdrant container, and Qdrant volume per paper;
+publish no host port. Use one collection within that instance with a named `content` vector,
+cosine distance, on-disk vectors, and on-disk payloads. Read
+[project-isolation.md](project-isolation.md) before changing this boundary.
+
+Persist one random `corpus_id` in each workspace's SQLite `workspace_meta`. Include `corpus_id`
+and the local `page_id` in every payload. Derive the Qdrant point UUID from both values so equal
+works in different corpora cannot overwrite each other. Every vector query must read the selected
+workspace and include an exact `corpus_id` match filter; never expose an unscoped search path. This
+filter remains mandatory for custom or cloud deployments that share a Qdrant server.
 
 Create payload indexes only for frequent filters:
 
+- `corpus_id`: keyword
 - `work_id`: keyword
 - `record_type`: keyword
 - `citation.DOI`: keyword
 - `publication_year`: integer
 - `quality.tier`: keyword
 
-Use deterministic UUID page IDs so retries are idempotent. Wait for upserts before marking SQLite
-pages as indexed.
+Use deterministic corpus-scoped UUID point IDs so retries are idempotent. Wait for upserts before
+marking SQLite pages as indexed. When migrating legacy data, use the new
+`academic_literature_v2` collection and queue every legacy page for re-ingestion.
 
 ## Scholarly sources
 

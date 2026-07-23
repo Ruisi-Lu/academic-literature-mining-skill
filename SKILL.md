@@ -1,6 +1,6 @@
 ---
 name: academic-literature-mining
-description: Mine, screen, acquire, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, and SQLite relational state. Includes explicit missing-token onboarding, opt-in paywalled-journal search with a resumable user-download handoff, and optional DOI-by-DOI Google Scholar library access through an authorized Chrome DevTools MCP session. Use when Codex must build or update a large citation-complete research corpus, conduct agent-assisted literature discovery, guide scholarly API or browser setup, preserve authorized or explicitly user-supplied PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
+description: Mine, screen, acquire, preserve, multimodally index, and query academically valuable scholarly literature with a Rust CLI, budget-model search subagents, NVIDIA Build Nemotron Embed/Rerank VL models, Qdrant vector retrieval, SQLite relational state, and isolated per-paper Compose projects. Includes explicit missing-token onboarding, opt-in paywalled-journal search with a resumable user-download handoff, and optional DOI-by-DOI Google Scholar library access through an authorized Chrome DevTools MCP session. Use when Codex must build or update one or more citation-complete research corpora without cross-paper data leakage, conduct agent-assisted literature discovery, guide scholarly API or browser setup, preserve authorized or explicitly user-supplied PDFs and authoritative citation metadata, import subagent search results, retrieve or inspect evidence without scanning archive JSON, export CSL JSON/BibTeX/RIS, or audit sources before writing a paper.
 ---
 
 # Academic Literature Mining
@@ -19,6 +19,11 @@ safely.
   repository. Never replace it with a source archive. Pair a checkout with only
   the exact published container release declared by its `Cargo.toml`; never infer
   compatibility from `latest`.
+- Treat every unrelated paper as a separate corpus boundary. Follow
+  [references/project-isolation.md](references/project-isolation.md): use a new
+  `projects/<slug>/` workspace and Compose project with its own Qdrant volume.
+  Never reuse or copy another paper's workspace. Require `query` to open the
+  intended workspace so its persisted `corpus_id` scopes every vector operation.
 - Enforce a strict read-only boundary for
   `~/Project/visual-encoding-vs-raw-iot-reasoning`: never create, edit, delete,
   rename, or move any file there. Read only
@@ -76,6 +81,8 @@ secret into chat.
 
 Read [INSTALL.MD](INSTALL.MD) before running the workflow. Follow its portable
 subagent-manifest procedure instead of assuming a particular agent framework.
+Read [references/project-isolation.md](references/project-isolation.md) before
+creating or starting any corpus.
 
 Ask whether to use the prebuilt Docker image or a native Rust build. When Docker
 Compose is available, recommend the image to avoid a host Rust compile and PDFium
@@ -89,27 +96,40 @@ unverified or `latest` image. If Docker itself is absent, provide the official
 installation path and obtain authorization before changing the host.
 
 Before copying or editing configuration, check only whether required values are
-present; do not print their values. Guide the user to copy `.env.example` to
-`.env`, then set stage-required values. Ask whether optional Semantic Scholar
-enrichment is wanted before requesting its key. Do not place secrets in a
-subagent manifest or inherit the coordinator environment into search workers.
+present; do not print their values. Ask the user to choose or confirm one unique
+paper slug, create a new `projects/<slug>/`, and copy `.env.example` to that
+directory as `.env`. Set `LITMINE_PROJECT` to the same slug, then guide the user
+through stage-required values. Ask whether optional Semantic Scholar enrichment
+is wanted before requesting its key. Do not place secrets in a subagent manifest
+or inherit the coordinator environment into search workers.
 
 Initialize the prebuilt runtime:
 
 ```bash
-cp .env.example .env
-# Edit .env before continuing.
-docker compose pull litmine
-docker compose up -d qdrant
-docker compose run --rm litmine doctor --check-qdrant
+PROJECT_SLUG=paper-a
+mkdir -p "projects/$PROJECT_SLUG"
+cp .env.example "projects/$PROJECT_SLUG/.env"
+cp assets/research-plan.example.json "projects/$PROJECT_SLUG/research-plan.json"
+# Edit only this project's .env and plan before continuing.
+docker compose --env-file "projects/$PROJECT_SLUG/.env" pull litmine
+docker compose --env-file "projects/$PROJECT_SLUG/.env" up -d qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  init --workspace /workspace
 ```
+
+Replace `paper-a` with the confirmed slug and refuse to overwrite an existing
+project. SQLite remains at `projects/<slug>/state.sqlite3`; it is embedded state,
+not a separate Compose service. Container-mode Qdrant stays only on that
+project's private network.
 
 For native mode, follow [INSTALL.MD](INSTALL.MD), build with locked Cargo
 dependencies, ask before downloading PDFium, and run the same Rust CLI directly.
 
 ## Define the research run
 
-Copy `assets/research-plan.example.json` and edit it for the research question.
+Edit `projects/<slug>/research-plan.json` for the research question.
 Before editing any switch, ask the user whether to enable it. Treat silence as
 disabled; do not infer consent from an existing key. At minimum ask about
 `include_preprints`, `include_paywalled`,
@@ -163,7 +183,9 @@ Import worker output:
 
 ```bash
 cargo run --release --locked -- \
-  import-agent-results corpus/inbox/candidates.ndjson
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  import-agent-results "projects/$PROJECT_SLUG/inbox/candidates.ndjson" \
+  --workspace "projects/$PROJECT_SLUG"
 ```
 
 Reject malformed output rather than repairing unsupported claims manually.
@@ -174,13 +196,17 @@ For open-access-only runs, run all built-in discovery and corpus stages:
 
 ```bash
 cargo run --release --locked -- \
-  mine --plan assets/research-plan.example.json
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  mine --plan "projects/$PROJECT_SLUG/research-plan.json" \
+  --workspace "projects/$PROJECT_SLUG"
 ```
 
 In prebuilt-image mode, invoke the same subcommands through
-`docker compose run --rm litmine`, use `/workspace/...` paths, and keep the full
-checkout bind-mounted there. Do not run a host `cargo build` or request
-`--prepare-pdfium` in that mode.
+`docker compose --env-file projects/<slug>/.env run --rm litmine`, use
+`/workspace` for the corpus and `/workspace/research-plan.json` for its plan. Only
+that paper's ignored project directory is bind-mounted; keep the Git checkout
+separate and updateable. Do not run a host `cargo build` or request
+`--prepare-pdfium` in image mode.
 
 If `include_paywalled` is enabled, prefer controlled stages so the workflow can
 pause cleanly for the user. The `mine` command is still resumable and reports the
@@ -190,14 +216,14 @@ their files.
 For controlled runs, execute the stages independently:
 
 ```bash
-cargo run --release --locked -- discover --plan research-plan.json
-cargo run --release --locked -- refresh-metadata
-cargo run --release --locked -- screen --plan research-plan.json
-cargo run --release --locked -- download
-cargo run --release --locked -- render
-cargo run --release --locked -- ingest
-cargo run --release --locked -- audit
-cargo run --release --locked -- export
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" discover --plan "projects/$PROJECT_SLUG/research-plan.json" --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" refresh-metadata --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" screen --plan "projects/$PROJECT_SLUG/research-plan.json" --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" download --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" render --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" ingest --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" audit --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" export --workspace "projects/$PROJECT_SLUG"
 ```
 
 ## Hand off paywalled PDFs to the user
@@ -226,11 +252,11 @@ After the browser has saved the file successfully, or after the user confirms a
 manual placement, rerun:
 
 ```bash
-cargo run --release --locked -- download --workspace corpus
-cargo run --release --locked -- render --workspace corpus
-cargo run --release --locked -- ingest --workspace corpus
-cargo run --release --locked -- audit --workspace corpus
-cargo run --release --locked -- export --workspace corpus
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" download --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" render --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" ingest --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" audit --workspace "projects/$PROJECT_SLUG"
+cargo run --release --locked -- --env-file "projects/$PROJECT_SLUG/.env" export --workspace "projects/$PROJECT_SLUG"
 ```
 
 `download` validates and hashes the supplied regular PDF, records manual
@@ -257,6 +283,11 @@ cargo run --release --locked -- render --refresh-existing
 cargo run --release --locked -- ingest
 ```
 
+After upgrading a pre-isolation workspace, follow the migration procedure in
+[references/project-isolation.md](references/project-isolation.md). Run `init`
+once to assign its persistent `corpus_id`; this queues legacy indexed pages for
+the new `academic_literature_v2` collection. Re-ingest before querying.
+
 Inspect `status` and the audit output after every large run. Do not treat a network
 retry, a missing abstract, or an inaccessible PDF as a successful source.
 
@@ -280,7 +311,9 @@ Search the multimodal page corpus:
 
 ```bash
 cargo run --release --locked -- \
+  --env-file "projects/$PROJECT_SLUG/.env" \
   query "state one atomic evidence question precisely" \
+  --workspace "projects/$PROJECT_SLUG" \
   --top-k 20 --candidate-limit 80
 ```
 
@@ -288,9 +321,9 @@ Query relational metadata:
 
 ```bash
 cargo run --release --locked -- \
-  catalog --workspace corpus --status indexed --limit 50
+  catalog --workspace "projects/$PROJECT_SLUG" --status indexed --limit 50
 cargo run --release --locked -- \
-  inspect-work 'doi:10.1234/example' --workspace corpus
+  inspect-work 'doi:10.1234/example' --workspace "projects/$PROJECT_SLUG"
 ```
 
 The CLI embeds the text query, retrieves candidate PDF pages from Qdrant, then

@@ -34,7 +34,8 @@ content-addressed copy under `metadata/plans/` whenever discovery or screening r
 
 Attach these values to every multimodal page point:
 
-- deterministic page UUID;
+- persistent workspace `corpus_id`, local `page_id`, and a deterministic Qdrant point UUID derived
+  from both;
 - canonical work ID and one-based page number;
 - rendered image path and SHA-256;
 - embedded native page text and the actual embedding modality (`text_image` or `image`);
@@ -45,6 +46,8 @@ Attach these values to every multimodal page point:
 - publication year and authorized PDF URL.
 
 This duplication intentionally keeps every retrieved page independently citable.
+Every query must load `corpus_id` from the selected live SQLite workspace and apply an exact
+Qdrant payload filter before candidates are reranked.
 
 For a user-supplied paywalled PDF, add a `manual-pdf` source record with its source URL, exact local
 path, checksum, acquisition type, and `reuse_license_asserted: false`. Store the PDF license value

@@ -1,4 +1,4 @@
 interface:
   display_name: "Academic Literature Mining"
   short_description: "Mine and query citation-safe scholarly evidence"
-  default_prompt: "Use $academic-literature-mining to build a research corpus, guide missing setup, and ask before enabling preprints, paywalled sources, or library-linked Chrome access."
+  default_prompt: "Use $academic-literature-mining to build one isolated project per paper, guide missing setup, and ask before enabling preprints, paywalled sources, or library-linked Chrome access."

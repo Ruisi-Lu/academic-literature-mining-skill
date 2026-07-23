@@ -29,7 +29,8 @@ Key properties:
 - Deliberate paywalled discovery and retention are disabled by default and use a
   resumable publisher-link handoff, optionally assisted DOI-by-DOI by an authorized
   existing Chrome session.
-- Qdrant runs through Docker Compose and is bound to localhost by default.
+- Each paper gets an isolated Compose project, private Qdrant service and volume,
+  host workspace, SQLite database, and corpus-scoped vector IDs.
 - CSL JSON, BibTeX, RIS, canonical JSONL, and corpus audits are exported.
 - SQLite-backed resumable stages make large corpus runs recoverable.
 
@@ -76,12 +77,18 @@ rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
 ## Quick start
 
 ```bash
-cp .env.example .env
+PROJECT_SLUG=paper-a
+test ! -e "projects/$PROJECT_SLUG"
+mkdir -p "projects/$PROJECT_SLUG"
+cp .env.example "projects/$PROJECT_SLUG/.env"
+cp assets/research-plan.example.json "projects/$PROJECT_SLUG/research-plan.json"
 ```
 
-Edit `.env` and set at least:
+Replace `paper-a` with a unique slug for this paper. Edit only
+`projects/<slug>/.env`, set `LITMINE_PROJECT` to the same slug, and set at least:
 
 ```dotenv
+LITMINE_PROJECT=paper-a
 NVIDIA_API_KEY=your-nvidia-build-key
 OPENALEX_API_KEY=your-openalex-key
 CONTACT_EMAIL=you@example.edu
@@ -94,28 +101,37 @@ locally generated secret for the bundled self-hosted service, not a vendor-issue
 token. See [`references/user-interaction.md`](references/user-interaction.md) for
 stage-specific setup and safe secret handling.
 
+Do not reuse or copy another paper's project directory. SQLite, PDFs, rendered
+pages, and exports stay under `projects/<slug>/`; Compose creates a separate
+network, Qdrant container, and volume. See
+[`references/project-isolation.md`](references/project-isolation.md).
+
 The recommended path pulls the exact published image version declared in
 `.env.example`; it does not use `latest`. Verify that the matching `vX.Y.Z`
 release exists under the canonical repository's GitHub Releases before pulling:
 
 ```bash
-docker compose pull litmine
-docker compose up -d qdrant
-docker compose run --rm --no-deps litmine --version
+docker compose --env-file "projects/$PROJECT_SLUG/.env" pull litmine
+docker compose --env-file "projects/$PROJECT_SLUG/.env" up -d qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm --no-deps \
+  litmine --version
 ```
 
 Validate the container, its preinstalled PDFium cache, and Qdrant:
 
 ```bash
-docker compose run --rm litmine doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  init --workspace /workspace
 ```
 
 Run the example research plan:
 
 ```bash
-docker compose run --rm litmine \
-  mine --plan /workspace/assets/research-plan.example.json \
-  --workspace /workspace/corpus --max-candidates 1000
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  mine --plan /workspace/research-plan.json \
+  --workspace /workspace --max-candidates 1000
 ```
 
 For native mode, run `cargo build --release --locked`, then follow
@@ -144,7 +160,9 @@ Import verified worker output:
 
 ```bash
 cargo run --release --locked -- \
-  import-agent-results spool/candidates.ndjson --workspace corpus
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  import-agent-results "projects/$PROJECT_SLUG/inbox/candidates.ndjson" \
+  --workspace "projects/$PROJECT_SLUG"
 ```
 
 Malformed or unverifiable candidates are rejected. A candidate must contain at
@@ -171,7 +189,7 @@ examples. The canonical record preserves both the raw reranker logit and the
 sigmoid-normalized score.
 
 Every discovery or screening run preserves the normalized active plan and an
-immutable, content-addressed copy under `corpus/metadata/plans/`.
+immutable, content-addressed copy under `projects/<slug>/metadata/plans/`.
 
 ## Pipeline commands
 
@@ -179,20 +197,20 @@ The full `mine` command runs every stage. Each stage can also be resumed
 independently:
 
 ```bash
-target/release/litmine discover --plan research-plan.json --workspace corpus
-target/release/litmine refresh-metadata --workspace corpus
-target/release/litmine screen   --plan research-plan.json --workspace corpus
-target/release/litmine download --workspace corpus
-target/release/litmine render   --workspace corpus
-target/release/litmine ingest   --workspace corpus
-target/release/litmine export   --workspace corpus
-target/release/litmine audit    --workspace corpus
-target/release/litmine status   --workspace corpus
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" discover --plan "projects/$PROJECT_SLUG/research-plan.json" --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" refresh-metadata --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" screen --plan "projects/$PROJECT_SLUG/research-plan.json" --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" download --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" render --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" ingest --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" export --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" audit --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" status --workspace "projects/$PROJECT_SLUG"
 ```
 
 With `include_paywalled: true`, `download` returns a `manual_downloads` array for
 works it cannot fetch automatically. Each entry contains official publisher/DOI
-links, an exact path under `corpus/pdfs/`, and—when separately enabled—a Google
+links, an exact path under `projects/<slug>/pdfs/`, and—when separately enabled—a Google
 Scholar DOI query URL. The user can place the PDF themselves, or an authorized
 existing `chrome-devtools` MCP can follow visible Scholar library links one DOI at
 a time. Rerunning `download` validates the regular non-symlink PDF, records its
@@ -215,23 +233,29 @@ refresh before applying its hard preprint gate.
 To migrate an existing workspace, run:
 
 ```bash
-target/release/litmine refresh-metadata --workspace corpus
-target/release/litmine screen --plan research-plan.json --workspace corpus
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" refresh-metadata --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" screen --plan "projects/$PROJECT_SLUG/research-plan.json" --workspace "projects/$PROJECT_SLUG"
 ```
+
+For a workspace created before per-paper isolation, first follow
+[`references/project-isolation.md`](references/project-isolation.md): place it in
+one `projects/<slug>/`, run `init` once to assign `corpus_id`, and re-ingest queued
+pages into `academic_literature_v2` before querying.
 
 To upgrade pages created by an older image-only version, explicitly rebuild and
 re-ingest them once:
 
 ```bash
-target/release/litmine render --refresh-existing --workspace corpus
-target/release/litmine ingest --workspace corpus
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" render --refresh-existing --workspace "projects/$PROJECT_SLUG"
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" ingest --workspace "projects/$PROJECT_SLUG"
 ```
 
 Search the multimodal page corpus:
 
 ```bash
-target/release/litmine query \
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" query \
   "What evidence supports citation-faithful scientific question answering?" \
+  --workspace "projects/$PROJECT_SLUG" \
   --top-k 20 --candidate-limit 80
 ```
 
@@ -244,7 +268,7 @@ Query live relational metadata without scanning exports:
 
 ```bash
 target/release/litmine catalog \
-  --workspace corpus \
+  --workspace "projects/$PROJECT_SLUG" \
   --status indexed \
   --year-from 2020 \
   --min-quality-score 65 \
@@ -252,7 +276,7 @@ target/release/litmine catalog \
 
 target/release/litmine inspect-work \
   'doi:10.1234/example' \
-  --workspace corpus
+  --workspace "projects/$PROJECT_SLUG"
 ```
 
 Use `query` for evidence by meaning, `catalog` for structured filters, and
@@ -322,10 +346,13 @@ The canonical work record preserves:
 - original PDF URL, local path, SHA-256, page-level native text, and rendered-image
   checksums.
 
-Every Qdrant page payload duplicates the canonical CSL citation and complete work
-record so a retrieved page remains independently attributable.
+Every Qdrant page payload duplicates the workspace `corpus_id`, local `page_id`,
+canonical CSL citation, and complete work record. Qdrant point UUIDs are scoped by
+`corpus_id`, and every query applies that exact filter, so one corpus cannot
+overwrite or retrieve another corpus's pages even on an intentionally shared
+Qdrant server.
 
-Exports are written under `corpus/exports/`:
+Exports are written under `projects/<slug>/exports/`:
 
 | File | Purpose |
 | --- | --- |
@@ -345,10 +372,13 @@ manuscript.
 
 ## Security and access controls
 
-- Qdrant ports `6333` and `6334` are bound to `127.0.0.1`.
+- Container mode publishes no Qdrant host ports; each paper uses a private Compose
+  network and project-scoped volume. Native mode has a separate opt-in override
+  that binds one unique port to `127.0.0.1` only.
 - Qdrant requires an API key.
 - The CLI image runs without Linux capabilities, uses a read-only root filesystem
-  under Compose, and receives secrets only at runtime from `.env`.
+  under Compose, and reads secrets only at runtime from the selected project's
+  `.env`.
 - Search subagents do not inherit coordinator environment variables.
 - Download redirects are checked and local/private-address targets are blocked.
 - Only openly licensed, open-access asserted, or recognized public-repository
@@ -358,7 +388,8 @@ manuscript.
   recorded as `user-supplied; reuse rights not established` and not redistributed.
 - Crossref TDM links alone are not treated as proof of open access.
 - Sci-Hub, access-control bypasses, and paywall scraping are explicitly excluded.
-- Secrets belong only in `.env`, which is ignored by Git.
+- Secrets belong only in `projects/<slug>/.env`; the entire `projects/` tree is
+  ignored by Git.
 
 ## Development
 

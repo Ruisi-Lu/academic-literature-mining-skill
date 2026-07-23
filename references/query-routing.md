@@ -3,6 +3,11 @@
 Read this file before querying an existing corpus or using corpus data in a
 manuscript. Treat the routing rules as mandatory.
 
+Select exactly one per-paper workspace before any lookup. Never query a global or
+implicit Qdrant collection. `litmine query --workspace <workspace>` reads that
+workspace's persistent `corpus_id`; the runtime includes it in point identities
+and applies it as a mandatory Qdrant filter.
+
 ## Contents
 
 - Select the authoritative query surface
@@ -33,9 +38,9 @@ research question.
 Do not use filesystem search or file-reading tools to discover research evidence
 inside any of these paths:
 
-- `corpus/exports/*.json`, `corpus/exports/*.jsonl`, or `records.jsonl`;
-- `corpus/metadata/**/*.json`, including preserved research plans;
-- `corpus/state.sqlite3`, its WAL/SHM files, or copied database files;
+- `projects/<slug>/exports/*.json`, `projects/<slug>/exports/*.jsonl`, or `records.jsonl`;
+- `projects/<slug>/metadata/**/*.json`, including preserved research plans;
+- `projects/<slug>/state.sqlite3`, its WAL/SHM files, or copied database files;
 - raw provider JSON in `source_records`;
 - rendered-page directories or extracted page text before vector retrieval.
 
@@ -66,8 +71,9 @@ metadata.
 Start a manuscript evidence pass with:
 
 ```bash
-target/release/litmine query \
+target/release/litmine --env-file "projects/$PROJECT_SLUG/.env" query \
   "state one atomic evidence question" \
+  --workspace "projects/$PROJECT_SLUG" \
   --top-k 20 --candidate-limit 80
 ```
 
@@ -88,7 +94,7 @@ Use `catalog` for structured selection:
 
 ```bash
 target/release/litmine catalog \
-  --workspace corpus \
+  --workspace "projects/$PROJECT_SLUG" \
   --status indexed \
   --year-from 2020 \
   --min-quality-score 65 \
@@ -100,7 +106,7 @@ Use `inspect-work` with the exact identifier returned by `query` or `catalog`:
 ```bash
 target/release/litmine inspect-work \
   'doi:10.1234/example' \
-  --workspace corpus
+  --workspace "projects/$PROJECT_SLUG"
 ```
 
 `inspect-work` intentionally returns page locators without `page_text` and source
@@ -111,18 +117,19 @@ the original PDF for evidence verification.
 
 When an MCP adapter exposes this corpus, use these tool definitions:
 
-- `search_evidence(query, top_k=20, candidate_limit=80)`: Perform the complete
+- `search_evidence(workspace, query, top_k=20, candidate_limit=80)`: Open exactly
+  one workspace, read its `corpus_id`, and perform the complete
   Nemotron query embedding, Qdrant `content` vector search, and Nemotron VL page
-  rerank. Make this the only tool described as capable of finding passage-level
-  research evidence.
-- `catalog_works(status?, year_from?, year_to?, min_quality_score?,
+  rerank with the mandatory corpus filter. Make this the only tool described as
+  capable of finding passage-level research evidence.
+- `catalog_works(workspace, status?, year_from?, year_to?, min_quality_score?,
   title_contains?, limit=50)`: Query live SQLite metadata. State explicitly that
   it cannot answer passage or manuscript-content questions.
-- `inspect_work(work_id)`: Query live SQLite for the canonical record, compact
+- `inspect_work(workspace, work_id)`: Query live SQLite for the canonical record, compact
   provenance locators, PDF artifact, and page locators. Exclude page text and raw
   source responses.
-- `corpus_status()`: Return live SQLite pipeline counts.
-- `audit_corpus()`: Run the live citation/artifact audit before manuscript work.
+- `corpus_status(workspace)`: Return live SQLite pipeline counts.
+- `audit_corpus(workspace)`: Run the live citation/artifact audit before manuscript work.
 
 Keep evidence, vectors, and relational metadata immutable during manuscript
 retrieval; an audit may refresh only its generated audit report. Do not expose

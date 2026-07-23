@@ -7,11 +7,13 @@ downloading PDFium, or asking the user to supply a PDF.
 
 Ask whether the user wants the release-pinned prebuilt Docker image or a native Rust build. The
 image avoids a host Rust toolchain and already contains PDFium; native mode avoids downloading the
-CLI image. Treat no answer as a request for guidance only.
+CLI image. Treat no answer as a request for guidance only. Before either mode, read
+[project-isolation.md](project-isolation.md), ask for one unique paper slug, and prepare that
+paper's new workspace without overwriting an existing directory.
 
 For container mode, retain the complete canonical Git checkout and read version `X.Y.Z` from its
 `Cargo.toml`. Verify the clone's exact `vX.Y.Z` tag and published, non-draft GitHub Release, then
-set `LITMINE_VERSION=X.Y.Z` in `.env` and pull only
+set `LITMINE_VERSION=X.Y.Z` in `projects/<slug>/.env` and pull only
 `ghcr.io/ruisi-lu/academic-literature-mining-skill:X.Y.Z`. Never choose `latest`, an unverified
 tag, or a release version different from the checkout. Explain the network and disk impact before
 pulling. If Docker is missing, give the applicable official Docker installation URL, explain the
@@ -23,45 +25,54 @@ Never stop at “missing token” or ask the user to paste a secret into chat. F
 
 1. Name the stage that needs it and whether it is required or optional.
 2. Give the official acquisition or creation URL.
-3. Tell the user to copy `.env.example` to the skill-root `.env` if `.env` does not exist.
+3. Tell the user to copy `.env.example` to `projects/<slug>/.env` if that new project's file does
+   not exist, and set `LITMINE_PROJECT=<slug>` there.
 4. Show the exact variable assignment with a placeholder, never the real value.
 5. Explain the verification command and wait for the user to confirm setup is complete.
 
 Inspect only whether a value is present and non-placeholder. Never print, quote, log, or expose its
-value. `.env` is ignored by Git; keep it out of subagent manifests and search-worker environments.
-When `--env-file` is used, apply the same rules to that file.
+value. `projects/` is ignored by Git; keep every project `.env` out of subagent manifests and
+search-worker environments. Pass the exact project file to every Compose call with `--env-file`.
 
 | Setting | When needed | User action |
 | --- | --- | --- |
-| `NVIDIA_API_KEY` | `doctor`, `screen`, `ingest`, `query`, and `mine` | Sign in at <https://build.nvidia.com/settings/api-keys>, generate a key, and set `NVIDIA_API_KEY=<key>` in `.env`. Verify with `litmine doctor`; do not change the two pinned model IDs. |
-| `OPENALEX_API_KEY` | Any plan whose `sources` contains `openalex`, or an OpenAlex-only lookup | Create an OpenAlex account, copy the key from <https://openalex.org/settings/api>, and set `OPENALEX_API_KEY=<key>` in `.env`. If the user declines, ask before removing `openalex` from `sources`. |
-| `CONTACT_EMAIL` | Crossref discovery or DOI resolution | Set `CONTACT_EMAIL=<address>` in `.env` for Crossref polite-pool requests. This is an email address, not a token. |
-| `QDRANT_API_KEY` | Bundled local Qdrant and all `ingest` or `query` operations | No vendor token is issued for the bundled self-hosted service. Have the user generate a strong secret, for example with `openssl rand -hex 32`, and set `QDRANT_API_KEY=<secret>` in `.env`; Docker Compose and `litmine` read the same value. For Qdrant Cloud, direct the user to the cluster’s Database API Keys page instead. |
-| `SEMANTIC_SCHOLAR_API_KEY` | Optional Semantic Scholar enrichment only | Ask whether to enable this enrichment. If yes, request a key at <https://www.semanticscholar.org/product/api#api-key-form>, wait for the emailed key, and set `SEMANTIC_SCHOLAR_API_KEY=<key>` in `.env`. If no, leave it empty. |
+| `NVIDIA_API_KEY` | `doctor`, `screen`, `ingest`, `query`, and `mine` | Sign in at <https://build.nvidia.com/settings/api-keys>, generate a key, and set `NVIDIA_API_KEY=<key>` in the project `.env`. Verify with `litmine doctor`; do not change the two pinned model IDs. |
+| `OPENALEX_API_KEY` | Any plan whose `sources` contains `openalex`, or an OpenAlex-only lookup | Create an OpenAlex account, copy the key from <https://openalex.org/settings/api>, and set `OPENALEX_API_KEY=<key>` in the project `.env`. If the user declines, ask before removing `openalex` from `sources`. |
+| `CONTACT_EMAIL` | Crossref discovery or DOI resolution | Set `CONTACT_EMAIL=<address>` in the project `.env` for Crossref polite-pool requests. This is an email address, not a token. |
+| `QDRANT_API_KEY` | Bundled local Qdrant and all `ingest` or `query` operations | No vendor token is issued for the bundled self-hosted service. Have the user generate a different strong secret for each paper, for example with `openssl rand -hex 32`, and set `QDRANT_API_KEY=<secret>` in the project `.env`; that paper's Compose project and `litmine` read the same value. For Qdrant Cloud, direct the user to the cluster’s Database API Keys page instead. |
+| `SEMANTIC_SCHOLAR_API_KEY` | Optional Semantic Scholar enrichment only | Ask whether to enable this enrichment. If yes, request a key at <https://www.semanticscholar.org/product/api#api-key-form>, wait for the emailed key, and set `SEMANTIC_SCHOLAR_API_KEY=<key>` in the project `.env`. If no, leave it empty. |
 
 After container setup, run:
 
 ```bash
-docker compose run --rm litmine doctor --check-qdrant
+docker compose --env-file "projects/$PROJECT_SLUG/.env" run --rm litmine \
+  doctor --check-qdrant
 ```
 
 After native setup, run:
 
 ```bash
-cargo run --release --locked -- doctor --check-qdrant
+cargo run --release --locked -- \
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  doctor --check-qdrant
 ```
 
 On first native use, explain that `--prepare-pdfium` downloads and caches a native PDFium library,
 ask before enabling it, and then run:
 
 ```bash
-cargo run --release --locked -- doctor --prepare-pdfium --check-qdrant
+cargo run --release --locked -- \
+  --env-file "projects/$PROJECT_SLUG/.env" \
+  doctor --prepare-pdfium --check-qdrant
 ```
 
 The prebuilt image already contains a read-only PDFium cache; do not run `--prepare-pdfium` for it.
-Explain that `docker compose up -d qdrant` starts a localhost-bound persistent service before
-running it. If Docker, Rust, an agent manifest, institutional authentication, or any other manual
-prerequisite is unavailable, give the exact next action and wait instead of claiming success.
+Explain that container mode keeps Qdrant on the selected paper's private Compose network and
+persistent project-scoped volume. Native mode must explicitly apply `docker-compose.native.yml`,
+choose a unique `QDRANT_HOST_PORT`, and bind only loopback as documented in
+[project-isolation.md](project-isolation.md). If Docker, Rust, an agent manifest, institutional
+authentication, or any other manual prerequisite is unavailable, give the exact next action and
+wait instead of claiming success.
 
 ## Ask about every optional switch
 
